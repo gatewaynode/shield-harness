@@ -54,6 +54,7 @@ pub struct Sidecar {
 pub struct Sample {
     pub sidecar: Sidecar,
     pub text_full_path: PathBuf,
+    pub sidecar_path: PathBuf,
 }
 
 impl Sample {

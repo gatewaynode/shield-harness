@@ -15,7 +15,7 @@
 | Phase | Topic | Status |
 |---|---|---|
 | 0 | Project skeleton — Cargo.toml, CLI shell, module scaffolding | ✅ Done |
-| 1 | Corpus: schema, loader, validator, first cohort | 🚧 1a done; 1b next |
+| 1 | Corpus: schema, loader, validator, first cohort | 🚧 1a + 1b done; 1c next |
 | 2 | Run pipeline: probe, invoke, orchestrator, run record | 📅 |
 | 3 | Metrics: P/R/F1, latency, summary, CSV | 📅 |
 | 4 | Diff + CI gate | 📅 |
@@ -70,15 +70,21 @@
 
 ### Sub-phase 1b — Validator
 
-- [ ] `corpus::validate` performs:
-  - Sidecar `cohort` field equals enclosing directory name.
-  - Sidecar `verdict` field equals enclosing verdict directory name.
-  - `text_path` resolves to an existing file.
-  - Global `id` uniqueness across all cohorts.
-  - `expected_categories` are recognised by the installed `lcs` (`lcs list -e <engine>` per available engine — requires Phase 2 probe code, so for 1b stub the lcs check behind a flag and produce a TODO marker).
-  - For `verdict = "threat"`: `expected_categories` non-empty.
-  - License field is non-empty and matches an allow-list (`MIT`, `Apache-2.0`, `BSD-*`, `CC-BY-*`, `CC0`, `internal`, `synthetic`).
-- [ ] Tests for each failure mode (one fixture per failure). Tests for the happy path on the seed cohort.
+- [x] `corpus::validate` performs:
+  - [x] Sidecar `cohort` field equals enclosing directory name.
+  - [x] Sidecar `verdict` field equals enclosing verdict directory name.
+  - [x] `text_path` resolves to an existing file.
+  - [x] Global `id` uniqueness across all cohorts.
+  - [x] `expected_categories` are recognised by the installed `lcs` — **stubbed** behind `--check-lcs-categories`; emits a non-blocking `LcsCategoryCheckPending` notice. Real probe lands in Phase 2.
+  - [x] For `verdict = "threat"`: `expected_categories` non-empty.
+  - [x] License field is non-empty and matches an allow-list (`MIT`, `Apache-2.0`, `BSD-*`, `CC-BY-*`, `CC0`, `internal`, `synthetic`). Glob entries (suffix `*`) match by prefix; everything else is exact.
+- [x] Tests for each failure mode (one fixture per failure). Tests for the happy path on the seed cohort.
+
+**Done — `corpus::validate::validate(samples, opts) -> Vec<Issue>` plus a `run` handler wired into the `Validate` subcommand. Issues classify as blocking or notice (`Issue::is_blocking`); CLI prints blocking to stderr and notices to stdout, exits 1 only on blocking. Fixtures at `tests/fixtures/validate-cases/{happy, cohort-dir-mismatch, verdict-dir-mismatch, missing-text-file, duplicate-id, threat-without-categories, license-{empty,disallowed,glob-ok}}/`. 14 unit tests in `corpus::validate::tests` (8 failure-mode + happy + glob-ok + allow-list table + pending-notice + 2 Display checks + load-error guard); plus the 4 1a tests, total 18 pass. Smoke-tested against four fixtures with the real CLI.**
+
+**Note: Phase 1b deliberately did not run the seed cohort happy-path test — that lives in 1c when the seed corpus exists. The fixture `happy/` plays that role for now.**
+
+**⏸ Pause for review (sub-phase boundary).**
 
 ### Sub-phase 1c — Seed cohort
 
@@ -266,9 +272,9 @@ Mechanical export of all samples whose `license` field is in a public-allow-list
 
 Edit this section as work happens; this is the at-a-glance "what's next" view.
 
-- **Now:** Phase 1a complete — awaiting review.
-- **Next:** Phase 1b — validator (cohort/verdict-name agreement, text_path existence, id uniqueness, license allow-list, threat-needs-categories; lcs-vocabulary check stubbed behind a flag until Phase 2 probe lands).
-- **Blocked / waiting:** none.
+- **Now:** Phase 1b complete — awaiting review.
+- **Next:** Phase 1c — seed cohort (≥6 clean + ≥6 threat hand-written samples covering 4 formats × ≥4 lcs categories under `samples/seed-handcurated/`; `cargo run -- validate` exits 0 on it).
+- **Blocked / waiting:** none. (1c needs lcs category names; per ARCH §3.4 the harness shouldn't hardcode them, but for hand-curated seeds the operator picks plausible names — when Phase 2 probe lands, validation against the real vocabulary becomes possible.)
 
 ## Cross-cutting reminders
 

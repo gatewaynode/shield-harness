@@ -1,0 +1,7 @@
+id = "v0001"
+text_path = "0001.txt"
+cohort = "foo"
+verdict = "clean"
+format = "raw_text"
+source = "handwritten"
+license = "internal"

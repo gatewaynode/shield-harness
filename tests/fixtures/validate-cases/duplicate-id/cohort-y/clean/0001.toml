@@ -1,0 +1,7 @@
+id = "vDUP"
+text_path = "0001.txt"
+cohort = "cohort-y"
+verdict = "clean"
+format = "raw_text"
+source = "handwritten"
+license = "internal"

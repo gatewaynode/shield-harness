@@ -1,0 +1,7 @@
+id = "v0101"
+text_path = "0101.txt"
+cohort = "foo"
+verdict = "threat"
+format = "raw_text"
+source = "handwritten"
+license = "internal"

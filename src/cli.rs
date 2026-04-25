@@ -38,7 +38,12 @@ pub enum Command {
 }
 
 #[derive(Args, Debug)]
-pub struct ValidateArgs {}
+pub struct ValidateArgs {
+    /// Check expected_categories against the lcs category vocabulary.
+    /// Currently emits a pending notice; the real check lands in Phase 2 once the engine probe exists.
+    #[arg(long)]
+    pub check_lcs_categories: bool,
+}
 
 #[derive(Args, Debug)]
 pub struct RunArgs {

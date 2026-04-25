@@ -33,6 +33,7 @@ pub fn load_corpus(root: &Path) -> Result<Vec<Sample>, String> {
                 samples.push(Sample {
                     sidecar,
                     text_full_path,
+                    sidecar_path: entry_path,
                 });
             }
         }
