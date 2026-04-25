@@ -1,0 +1,9 @@
+id = "0001"
+text_path = "0001.txt"
+cohort = "cohort-a"
+verdict = "clean"
+format = "raw_text"
+source = "handwritten"
+license = "internal"
+tags = ["english", "short"]
+notes = "first clean sample"

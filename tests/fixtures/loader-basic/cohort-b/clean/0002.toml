@@ -1,0 +1,9 @@
+id = "0002"
+text_path = "0002.txt"
+cohort = "cohort-b"
+verdict = "clean"
+format = "markdown"
+source = "synthetic"
+license = "internal"
+seed_id = "0001"
+tags = ["english"]
