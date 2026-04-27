@@ -1,0 +1,8 @@
+id = "seed-clean-006"
+text_path = "seed-clean-006.txt"
+cohort = "seed-handcurated"
+verdict = "clean"
+format = "chat_history"
+source = "handwritten"
+license = "internal"
+notes = "Benign multi-turn support exchange about a wifi router."

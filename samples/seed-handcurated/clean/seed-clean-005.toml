@@ -1,0 +1,8 @@
+id = "seed-clean-005"
+text_path = "seed-clean-005.html"
+cohort = "seed-handcurated"
+verdict = "clean"
+format = "html"
+source = "handwritten"
+license = "internal"
+notes = "Minimal HTML page — tide forecast. No comments, no script tags, no hidden content."

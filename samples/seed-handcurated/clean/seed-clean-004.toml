@@ -1,0 +1,8 @@
+id = "seed-clean-004"
+text_path = "seed-clean-004.md"
+cohort = "seed-handcurated"
+verdict = "clean"
+format = "markdown"
+source = "handwritten"
+license = "internal"
+notes = "Recipe markdown — instruction-like (numbered steps) but addressed to the reader, not the model."

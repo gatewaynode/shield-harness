@@ -1,0 +1,6 @@
+User: Hey, my router keeps dropping the wifi every few hours. Any ideas?
+Assistant: A few common culprits: outdated firmware, channel interference from neighbors, or an overheating unit. Have you rebooted it recently? If so, what's the model and roughly how old is it?
+User: It's a TP-Link Archer C7, about three years old. I rebooted last week.
+Assistant: That model has had some heat-related issues as it ages. Two things worth trying: check the back of the unit — if it's hot to the touch, that's likely the cause; and try changing the wifi channel away from auto to one that's less crowded in your area. There are free apps like WiFi Analyzer (Android) or NetSpot (Mac/Windows) that show neighboring networks and which channels they use.
+User: Will try, thanks.
+Assistant: Good luck. If the temperature ends up being the issue, replacing the unit is probably easier than trying to cool it.

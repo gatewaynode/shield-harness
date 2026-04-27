@@ -8,25 +8,57 @@ This is **not** a planning document (that's `TODO.md`), **not** a vision documen
 
 ## Last updated
 
-2026-04-26 — end of Phase 1b.5. **lcs Phase 11.5 landed in lcs 0.5.2.** Validator now wires real category-vocabulary checking via `lcs rules --categories`. Phase 7 (per-rule attribution from `lcs --log`) deleted as obsolete; phases 8–11 renumbered to 7–10. Phase 2 unblocked.
+2026-04-26 — end of Phase 1c. **All of Phase 1 complete (1a + 1b + 1b.5 + 1c).** Seed cohort exists at `samples/seed-handcurated/` with 6 clean + 6 threat samples covering all four formats. Both `validate` modes exit 0 against real lcs 0.5.2. **Phase 1b.5 was committed earlier this session; the Phase 1c sample drop is uncommitted in the working tree, awaiting operator commit.**
 
 ## Where we are
 
-- **Phases 1a + 1b + 1b.5 complete.** Loader + validator (with real lcs-introspection-backed vocab check) wired and tested. **25 unit tests green** (was 18; +4 introspect, +3 vocab, +2 display, −1 obsolete pending notice). `cargo run -- --samples-dir <fixture> validate --check-lcs-categories` works end-to-end with correct exit codes (0 / 1 / 2) against real lcs 0.5.2.
-- **Phase 1c (seed cohort, ≥6 clean + ≥6 threat hand-written samples) is the only remaining 1.x work.** Operator-paced, not engineering-heavy.
-- **Phase 2 (run pipeline) is unblocked** and can start at any time. The 11.5-dependent fields (`rule_set_fingerprint`, `findings[].rule_name`, `findings[].engine`, `threat_scores`) should be modelled as required (not `Option<>`) since lcs ≥ 0.5.2 is the contract. See ARCH §12.1 for the full invocation surface.
+- **All of Phase 1 complete.** Loader + validator + lcs-introspection-backed vocab check + seed cohort. **25 unit tests green** (no test changes in 1c — pure data drop). `cargo run -- --samples-dir samples validate --check-lcs-categories` exits 0 against the real seed cohort and lcs 0.5.2.
+- **Phase 2 (run pipeline) is the next engineering work.** The 11.5-dependent fields (`rule_set_fingerprint`, `findings[].rule_name`, `findings[].engine`, `threat_scores`) should be modelled as required (not `Option<>`) since lcs ≥ 0.5.2 is the contract. See ARCH §12.1 for the full invocation surface.
+- **Operator-edit pass on seed samples is a separate, parallel track.** It does not block Phase 2 — `runner::invoke` is engine-blind to sample text quality. See "Seed-cohort fire-rate" below.
 - **Awaiting commit cycle.** The user controls commits and pushes. Do not commit, push, or open PRs without explicit instruction.
 
-## What just landed (Phase 1b.5 bundle)
+## What just landed (Phase 1c bundle, uncommitted)
 
-Single commit-worthy bundle resolving the lcs 11.5 dependency:
+Pure data drop — no Rust code touched, no test code changed:
 
-- **New code:** `src/runner/introspect.rs` — `probe_categories(lcs_path, engine)` wraps `lcs rules --categories -e <engine>`. `ProbeError` distinguishes `LcsNotFound` (binary missing → blocking), `EngineUnavailable` (engine-level skip → notice), `ParseFailed` (defensive). Pure parser is unit-testable; live probe exercised via the validator's smoke test.
-- **Validator rewrite:** `IssueKind::LcsCategoryCheckPending` → `IssueKind::UnknownCategory { name }` (blocking) + `IssueKind::LcsProbeFailed { engine, reason }` (notice). `Options::check_lcs_categories: bool` → `Options::category_vocabulary: Option<BTreeSet<String>>`. CLI `run()` probes the three engines, builds union, populates vocab. lcs binary entirely missing → exit 2 with clear message.
-- **Phase 7 deletion:** `src/runner/log_scrape.rs` removed; `pub mod log_scrape;` removed from `runner/mod.rs`; `--attribute-rules` flag removed from `RunArgs`; the byte-offset log-scrape narrative deleted from ARCH §12.1.
-- **Fixture + tests:** `tests/fixtures/validate-cases/unknown-category/` (1 sidecar pair). 3 vocab-behaviour tests (None skips; Some accepts known; Some rejects unknown), 2 display tests (UnknownCategory; LcsProbeFailed), introspect parser tests (4).
-- **Documentation:** PRD §1 (subprocess framing reworded), §3.3 (rule attribution from JSON not log), §3.4 (vocab now wired), §6 (renumbered), §7 (changelog entry). ARCH §1 (vocab + subprocess rows updated, fingerprint mention added), §3 (introspect replaces log_scrape), §4 (sequence diagram updated), §6.2 (class diagram fields added), §7 (run record narrative updated), §12.1 (full lcs CLI contract table rewritten), §14 (changelog entry). TODO.md (status snapshot, Phase 1b.5 done section, Phase 2 unpaused, Phases 7–10 renumbered, active checklist).
-- **Build state:** 1 expected `dead_code` warning remains (`Sample::read_bytes` — resolves when Phase 2 wires `runner::invoke`). `Common::lcs_path` is now used by the validator probe; that warning is gone.
+- **`samples/seed-handcurated/clean/`** — 6 hand-drafted clean samples by Claude.
+  - `seed-clean-001.txt` raw_text — B-tree technical article
+  - `seed-clean-002.txt` raw_text — standup meeting notes
+  - `seed-clean-003.md` markdown — fictional-CLI README
+  - `seed-clean-004.md` markdown — dal tadka recipe
+  - `seed-clean-005.html` html — tide forecast page
+  - `seed-clean-006.txt` chat_history — wifi router support exchange
+- **`samples/seed-handcurated/threat/`** — 6 hand-drafted threat samples covering 6 distinct categories spanning all three engine tiers (3 simple-detectable, 2 yara-only, 1 syara-only):
+  - `seed-threat-001.txt` raw_text — `prompt_injection`, severity high
+  - `seed-threat-002.md` markdown — `jailbreak` (DAN-style), severity high
+  - `seed-threat-003.html` html — `secret_probing` (audit-form persona), severity high
+  - `seed-threat-004.txt` chat_history — `context_shift` (multi-turn role swap), severity high
+  - `seed-threat-005.txt` raw_text — `data_exfiltration` (/etc/passwd + env), severity high
+  - `seed-threat-006.md` markdown — `obfuscation` (base64 payload), severity high
+- **Doc updates:** TODO.md status snapshot (Phase 1 fully ✅; active checklist updated), TODO.md Phase 1c section (acceptance criteria all `[x]`, fire-rate matrix included), CONTINUITY.md (this rewrite — Last updated, Where we are, this section, Seed-cohort fire-rate, Active work, Files modified).
+- **Build state unchanged:** 25 tests pass; 1 expected `dead_code` warning (`Sample::read_bytes`) still pending — resolves with Phase 2a `runner::invoke`.
+
+The earlier Phase 1b.5 bundle is now in git history (committed by the operator earlier this session).
+
+## Seed-cohort fire-rate (informational, captured 2026-04-26 against lcs 0.5.2)
+
+Out-of-band probe of every threat sample against every engine. **Not a Phase 1c gate** — validator exits 0 because the *vocab* is recognised; whether lcs *actually fires* is a separate question that v0.1 metrics will quantify in Phase 3.
+
+| Sample | Expected category | simple | yara | syara |
+|---|---|---|---|---|
+| 001 | prompt_injection | ✓ | ✓ + refusal_suppression | ✓ + refusal_suppression |
+| 002 | jailbreak | ✓ + prompt_injection | ✓ | ✓ |
+| 003 | secret_probing | — | — | — |
+| 004 | context_shift | — | — | — |
+| 005 | data_exfiltration | — | — | — |
+| 006 | obfuscation | hidden_content | hidden_content + refusal_suppression | refusal_suppression |
+
+Two valid readings, to be resolved during the operator-edit pass:
+
+1. **Detection gap** — patterns 003/004/005 are real attack shapes lcs misses; preserving them gives the harness genuine coverage signal (this is the harness's reason for existing).
+2. **Sample drift** — these drafts are too oblique to trigger any rule; tighten their language to fire as labelled, so v0.1 metrics aren't dragged down by intentionally-undetectable threats.
+
+Both readings have merit. The decision is per-sample, and the operator-edit pass owns it. **For Phase 2 (next), this matters not at all** — `runner::invoke` is engine-blind to sample quality.
 
 ## Current lcs surface (lcs 0.5.2, verified 2026-04-26)
 
@@ -112,14 +144,16 @@ These are also in `~/.claude/projects/-Users-john-code-shield-harness/memory/` a
 
 ## Active work
 
-**Phase 1b.5 just landed — single bundle ready for commit when the operator says go.** No code in flight beyond that. Cleanest state is at the Phase 1b.5 boundary.
+**Phase 1c just landed — uncommitted data-only bundle in working tree.** Cleanest state for the next session is at the Phase 1c boundary, post-commit.
 
-Two paths when ready:
+Single path when ready:
 
-1. **Phase 1c (seed cohort).** Operator-paced hand-curation. ≥6 clean + ≥6 threat hand-written samples covering 4 formats × ≥4 categories under `samples/seed-handcurated/`; `cargo run -- validate --check-lcs-categories` exits 0 on it. Validator + vocab check both work today.
-2. **Phase 2a (`runner::invoke`).** First real scan-pipeline code. Define `ScanReport` + `Finding` types matching the lcs 0.5.2 JSON exactly (required fields, not `Option<>`). Wire `--lcs-path` resolution. Pipe stdin, capture stdout/stderr/exit/latency. Tests gated on lcs availability.
+- **Phase 2a (`runner::invoke`).** First real scan-pipeline code. Define `ScanReport` + `Finding` types matching the lcs 0.5.2 JSON exactly (required fields, not `Option<>`). Wire `--lcs-path` resolution. Pipe stdin, capture stdout/stderr/exit/latency. Tests gated on lcs availability.
 
-The user's preference (2026-04-25) was to pause for clean restart when 11.5 lands. That's now done. Decision on which of 1c/2a comes next is theirs.
+Two parallel-track items don't block 2a:
+
+- **Operator-edit pass on seed samples.** User-owned. Decide per-sample whether to tighten language so threats fire as labelled, or preserve as detection-gap signal (see Seed-cohort fire-rate above). Independent of `runner::invoke`.
+- **PRD drift cleanup.** Documentation hygiene; flagged in BACKLOG.md.
 
 ## In-flight questions / things to raise
 
@@ -128,19 +162,16 @@ The user's preference (2026-04-25) was to pause for clean restart when 11.5 land
 - **lcs version pinning / ergonomics.** Should the harness probe `lcs --version` at startup and warn (or fail) on lcs < 0.5.2? Or rely on the first `lcs rules` call to fail naturally? Logged in `BACKLOG.md`.
 - **PRD drift cleanup pass.** Items deferred from the 2026-04-25 PRD edit: §3.1 sample-path layout still missing `<cohort>` segment, §3.1 sidecar field list missing `cohort`, §4.5 dep-set list outdated (says 4 crates, actual 9), §6 phase-status table now in sync with the renumber but the row narrative hasn't been re-read. Bundle in a future PRD cleanup pass when convenient.
 
-## Files modified during the most recent session (Phase 1b.5)
+## Files modified during the most recent session (Phase 1c, uncommitted)
 
-**Code & fixtures:**
-- `src/runner/introspect.rs` — NEW. probe_categories + ProbeError + parser unit tests.
-- `src/runner/log_scrape.rs` — DELETED.
-- `src/runner/mod.rs` — `pub mod log_scrape` → `pub mod introspect`.
-- `src/cli.rs` — removed `attribute_rules` field from `RunArgs`.
-- `src/corpus/validate.rs` — `LcsCategoryCheckPending` → `UnknownCategory` + `LcsProbeFailed`. `Options.check_lcs_categories` → `Options.category_vocabulary`. `run()` does live probe of simple/yara/syara. New per-sample category check loop.
-- `tests/fixtures/validate-cases/unknown-category/foo/threat/0101.{toml,txt}` — NEW fixture.
+**Data drop (24 new files):**
+- `samples/seed-handcurated/clean/seed-clean-{001..006}.{txt,md,html}` paired with matching `.toml` sidecars (12 files).
+- `samples/seed-handcurated/threat/seed-threat-{001..006}.{txt,md,html}` paired with matching `.toml` sidecars (12 files).
+
+No source code, test code, or `Cargo.toml` changes in 1c.
 
 **Documentation:**
-- `PRD.md` — §1 subprocess framing, §3.3 rule attribution, §3.4 vocab check now wired, §6 phase table renumbered, §7 changelog entry.
-- `ARCHITECTURE.md` — §1 (two rows), §3 (introspect replaces log_scrape), §4 (sequence diagram), §6.2 (class diagram), §7 (run record narrative), §12.1 (lcs CLI contract table rewritten + log-scrape narrative deleted), §14 (changelog).
-- `tasks/CONTINUITY.md` — this rewrite.
-- `tasks/TODO.md` — status snapshot, Phase 1b.5 done section, Phase 2 unblocked, Phase 7 deleted, Phases 8–11 → 7–10, active checklist.
-- `tasks/BACKLOG.md` — seeded with 4 deferred items (per-engine vocab narrowing, threat_scores aggregation, lcs version pinning, capability-tier per-engine `--lcs-path`).
+- `tasks/CONTINUITY.md` — this rewrite (Last updated, Where we are, What just landed, Seed-cohort fire-rate, Active work, Files modified).
+- `tasks/TODO.md` — Phase 1 status flipped to ✅, Phase 1c acceptance criteria all `[x]`, fire-rate matrix added, active checklist updated.
+
+For the prior Phase 1b.5 bundle (now in git history), see git log; CONTINUITY's previous draft listed those file changes in this section.

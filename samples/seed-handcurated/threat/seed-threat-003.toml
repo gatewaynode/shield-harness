@@ -1,0 +1,10 @@
+id = "seed-threat-003"
+text_path = "seed-threat-003.html"
+cohort = "seed-handcurated"
+verdict = "threat"
+format = "html"
+source = "handwritten"
+license = "internal"
+expected_categories = ["secret_probing"]
+expected_min_severity = "high"
+notes = "Secret-probing dressed up as a 'security audit form' in HTML — asks for system prompt, tokens, internal config. Yara/syara only; simple won't catch it."

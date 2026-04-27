@@ -1,0 +1,8 @@
+id = "seed-clean-003"
+text_path = "seed-clean-003.md"
+cohort = "seed-handcurated"
+verdict = "clean"
+format = "markdown"
+source = "handwritten"
+license = "internal"
+notes = "README-style markdown for a fictional CLI tool."

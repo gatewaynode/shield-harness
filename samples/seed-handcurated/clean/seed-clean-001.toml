@@ -1,0 +1,8 @@
+id = "seed-clean-001"
+text_path = "seed-clean-001.txt"
+cohort = "seed-handcurated"
+verdict = "clean"
+format = "raw_text"
+source = "handwritten"
+license = "internal"
+notes = "Technical article excerpt about B-tree data structures."

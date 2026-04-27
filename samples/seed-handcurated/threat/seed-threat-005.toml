@@ -1,0 +1,10 @@
+id = "seed-threat-005"
+text_path = "seed-threat-005.txt"
+cohort = "seed-handcurated"
+verdict = "threat"
+format = "raw_text"
+source = "handwritten"
+license = "internal"
+expected_categories = ["data_exfiltration"]
+expected_min_severity = "high"
+notes = "Data-exfiltration: extract /etc/passwd + secret-suffixed env vars. Should fire on all three engines."

@@ -1,0 +1,11 @@
+Standup notes — 2026-04-23
+
+Present: Maya, Devon, Priya. Apologies: Sam (out sick).
+
+Maya finished the metrics dashboard PR; pending review from Devon. The Grafana board renders the new latency percentiles correctly against last week's run.
+
+Devon hit a flaky test on the integration suite — opened ticket INF-441. Suspect the docker-compose ordering is racey when the redis container starts after the worker. Will repro locally before reassigning.
+
+Priya started on the v0.3 migration plan, draft expected Friday. Will need a 30-minute review slot from Maya next week.
+
+No blockers. Next standup: Friday 9am.
