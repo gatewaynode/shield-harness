@@ -1,10 +1,13 @@
 use crate::cli::{Common, ValidateArgs};
 use crate::corpus::loader::load_corpus;
 use crate::corpus::sample::{Sample, Verdict};
-use std::collections::HashMap;
+use crate::runner::introspect::{probe_categories, ProbeError};
+use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 use std::path::PathBuf;
 use std::process::ExitCode;
+
+const PROBED_ENGINES: &[&str] = &["simple", "yara", "syara"];
 
 const LICENSE_ALLOWLIST: &[&str] = &[
     "MIT",
@@ -37,9 +40,18 @@ pub enum IssueKind {
     LicenseDisallowed {
         value: String,
     },
-    /// Emitted when --check-lcs-categories is passed; the real check requires the
-    /// Phase 2 engine probe and lcs `list -e <eng>` invocation. Non-blocking notice.
-    LcsCategoryCheckPending,
+    /// A sample's expected_categories entry is not in the union vocabulary
+    /// reported by `lcs rules --categories -e <engine>` across probed engines.
+    UnknownCategory {
+        name: String,
+    },
+    /// Probing a single engine's category vocabulary failed (engine unavailable,
+    /// parse error). Recorded as a non-blocking notice so the check still runs
+    /// against whichever engines did respond.
+    LcsProbeFailed {
+        engine: String,
+        reason: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -51,7 +63,7 @@ pub struct Issue {
 
 impl Issue {
     pub fn is_blocking(&self) -> bool {
-        !matches!(self.kind, IssueKind::LcsCategoryCheckPending)
+        !matches!(self.kind, IssueKind::LcsProbeFailed { .. })
     }
 }
 
@@ -93,29 +105,28 @@ impl fmt::Display for Issue {
             IssueKind::LicenseDisallowed { value } => {
                 write!(f, "license '{value}' is not in the allow-list")
             }
-            IssueKind::LcsCategoryCheckPending => write!(
+            IssueKind::UnknownCategory { name } => write!(
                 f,
-                "notice: --check-lcs-categories is acknowledged but the lcs vocabulary probe lands in Phase 2"
+                "expected_category '{name}' is not in the union vocabulary reported by lcs"
             ),
+            IssueKind::LcsProbeFailed { engine, reason } => {
+                write!(f, "notice: {reason}; engine '{engine}' excluded from category vocabulary")
+            }
         }
     }
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct Options {
-    pub check_lcs_categories: bool,
+    /// Union vocabulary of categories the installed lcs can emit, populated from
+    /// `lcs rules --categories -e <engine>` across probed engines. None = skip
+    /// the category-vocabulary check (default; preserves "validate works without
+    /// an lcs install").
+    pub category_vocabulary: Option<BTreeSet<String>>,
 }
 
 pub fn validate(samples: &[Sample], opts: &Options) -> Vec<Issue> {
     let mut issues: Vec<Issue> = Vec::new();
-
-    if opts.check_lcs_categories {
-        issues.push(Issue {
-            sample_id: String::new(),
-            sidecar_path: PathBuf::new(),
-            kind: IssueKind::LcsCategoryCheckPending,
-        });
-    }
 
     let mut first_seen: HashMap<&str, &Sample> = HashMap::new();
     for sample in samples {
@@ -191,6 +202,14 @@ pub fn validate(samples: &[Sample], opts: &Options) -> Vec<Issue> {
                 value: sid.license.clone(),
             });
         }
+
+        if let Some(vocab) = &opts.category_vocabulary {
+            for cat in &sid.expected_categories {
+                if !vocab.contains(cat) {
+                    push(IssueKind::UnknownCategory { name: cat.clone() });
+                }
+            }
+        }
     }
 
     issues
@@ -215,10 +234,49 @@ pub fn run(common: Common, args: ValidateArgs) -> ExitCode {
         }
     };
 
+    let mut probe_notices: Vec<Issue> = Vec::new();
+    let mut category_vocabulary: Option<BTreeSet<String>> = None;
+
+    if args.check_lcs_categories {
+        let mut union: BTreeSet<String> = BTreeSet::new();
+        let mut any_succeeded = false;
+
+        for engine in PROBED_ENGINES {
+            match probe_categories(common.lcs_path.as_deref(), engine) {
+                Ok(cats) => {
+                    union.extend(cats);
+                    any_succeeded = true;
+                }
+                Err(ProbeError::LcsNotFound { path, source }) => {
+                    eprintln!(
+                        "validate: lcs binary '{path}' not runnable: {source} \
+                         — --check-lcs-categories cannot proceed"
+                    );
+                    return ExitCode::from(2);
+                }
+                Err(e) => {
+                    probe_notices.push(Issue {
+                        sample_id: String::new(),
+                        sidecar_path: PathBuf::new(),
+                        kind: IssueKind::LcsProbeFailed {
+                            engine: (*engine).to_string(),
+                            reason: e.to_string(),
+                        },
+                    });
+                }
+            }
+        }
+
+        if any_succeeded {
+            category_vocabulary = Some(union);
+        }
+    }
+
     let opts = Options {
-        check_lcs_categories: args.check_lcs_categories,
+        category_vocabulary,
     };
-    let issues = validate(&samples, &opts);
+    let mut issues = validate(&samples, &opts);
+    issues.extend(probe_notices);
 
     let blocking_count = issues.iter().filter(|i| i.is_blocking()).count();
     let notice_count = issues.len() - blocking_count;
@@ -397,16 +455,58 @@ mod tests {
         }
     }
 
+    fn vocab(words: &[&str]) -> BTreeSet<String> {
+        words.iter().map(|s| s.to_string()).collect()
+    }
+
     #[test]
-    fn lcs_category_flag_emits_non_blocking_notice() {
+    fn vocab_none_skips_category_check() {
+        // Default Options leaves category_vocabulary at None; even a sample with
+        // an obviously-bogus category should produce no UnknownCategory issues.
+        let issues = validate(&load("unknown-category"), &Options::default());
+        assert!(
+            !issues
+                .iter()
+                .any(|i| matches!(i.kind, IssueKind::UnknownCategory { .. })),
+            "got: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn vocab_check_accepts_known_categories() {
         let opts = Options {
-            check_lcs_categories: true,
+            category_vocabulary: Some(vocab(&[
+                "prompt_injection",
+                "instruction_override",
+                "hidden_content",
+            ])),
         };
         let issues = validate(&load("happy"), &opts);
-        assert_eq!(issues.len(), 1, "issues: {issues:?}");
-        let issue = &issues[0];
-        assert!(matches!(issue.kind, IssueKind::LcsCategoryCheckPending));
-        assert!(!issue.is_blocking());
+        assert!(issues.is_empty(), "got: {issues:?}");
+    }
+
+    #[test]
+    fn vocab_check_rejects_unknown_category() {
+        let opts = Options {
+            category_vocabulary: Some(vocab(&[
+                "prompt_injection",
+                "instruction_override",
+                "hidden_content",
+                "data_exfiltration",
+                "jailbreak",
+                "delimiter_manipulation",
+            ])),
+        };
+        let issues = validate(&load("unknown-category"), &opts);
+        let unknowns: Vec<&str> = issues
+            .iter()
+            .filter_map(|i| match &i.kind {
+                IssueKind::UnknownCategory { name } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(unknowns, vec!["definitely_not_a_real_category"]);
+        assert!(issues.iter().all(|i| i.is_blocking()));
     }
 
     #[test]
@@ -423,16 +523,35 @@ mod tests {
     }
 
     #[test]
-    fn pending_notice_display_omits_empty_fields() {
+    fn probe_failed_display_omits_empty_fields() {
         let issue = Issue {
             sample_id: String::new(),
             sidecar_path: PathBuf::new(),
-            kind: IssueKind::LcsCategoryCheckPending,
+            kind: IssueKind::LcsProbeFailed {
+                engine: "yara".to_string(),
+                reason: "lcs engine 'yara' unavailable: feature missing".to_string(),
+            },
         };
         let s = issue.to_string();
         assert!(!s.starts_with(": "), "{s}");
         assert!(!s.contains("[]"), "{s}");
-        assert!(s.contains("Phase 2"), "{s}");
+        assert!(s.contains("yara"), "{s}");
+        assert!(!issue.is_blocking());
+    }
+
+    #[test]
+    fn unknown_category_display_names_offending_value() {
+        let issue = Issue {
+            sample_id: "v0050".to_string(),
+            sidecar_path: PathBuf::from("/tmp/foo/threat/0050.toml"),
+            kind: IssueKind::UnknownCategory {
+                name: "context_drift".to_string(),
+            },
+        };
+        let s = issue.to_string();
+        assert!(s.contains("context_drift"), "{s}");
+        assert!(s.contains("union vocabulary"), "{s}");
+        assert!(issue.is_blocking());
     }
 
     #[test]

@@ -12,12 +12,12 @@ Architectural choices flow from a small set of load-bearing PRD constraints. Eac
 
 | Constraint (PRD ref) | Design consequence |
 |---|---|
-| External-only integration (§4.1) | All `lcs` interaction is via subprocess + log files. No `llm_context_shield` Cargo dependency. |
-| All-engines-by-default with graceful degradation (§3.2) | An *engine availability probe* runs before the main pass. Unavailable engines are recorded as `skipped` and excluded from metrics, never failed. |
-| Category vocabulary owned by `lcs` (§3.4) | Vocabulary is fetched at run start via `lcs list -e <engine>`. No hardcoded category enum. |
-| Determinism (§4.2) | Stable iteration order (sorted by sample `id`), stable JSON key ordering, percentile-only latency reporting. |
+| External-only integration (§4.1) | All `lcs` interaction is via subprocess. No `llm_context_shield` Cargo dependency. |
+| All-engines-by-default with graceful degradation (§3.2) | An *engine availability probe* runs before the main pass against the three engines the lcs CLI exposes (`simple`, `yara`, `syara`). Unavailable engines are recorded as `skipped` and excluded from metrics, never failed. |
+| Category vocabulary owned by `lcs` (§3.4) | Vocabulary fetch is wired against lcs ≥ 0.5.2's `lcs rules --categories -e <engine>`. Validator probes the three engines, builds the union, and rejects sidecar `expected_categories` entries outside it (blocking). Per-engine probe failures degrade to non-blocking notices; lcs binary entirely missing is a hard error. |
+| Determinism (§4.2) | Stable iteration order (sorted by sample `id`), stable JSON key ordering, percentile-only latency reporting. The per-engine `rule_set_fingerprint` from `ScanReport` is captured into `meta.json` so diffs can distinguish lcs version drift from rule-set drift. |
 | Self-supporting (§4.5) | v0.1 blessed dep set is exactly: `serde`, `serde_json`, `toml`, `clap`, `sha2`, `ureq`, `chrono`, `time`, `rayon`, `csv`. Anything beyond this set requires explicit discussion. `chrono` and `time` overlap; `chrono` is the active choice — see §13. |
-| Subprocess-only forbids library introspection (§5 non-goal) | Per-rule attribution is recovered by parsing `lcs --log` output. Best-effort, log-format-tolerant. |
+| Subprocess-only forbids library introspection (§5 non-goal) | Per-rule attribution comes from `findings[].rule_name` and `findings[].engine`, populated directly by lcs ≥ 0.5.2 in every `ScanReport`. Log-scrape is no longer required for attribution. |
 
 ## 2. System context
 
@@ -59,7 +59,7 @@ flowchart TB
         orch[runner/orchestrator.rs<br/>schedule + collect]
         invoke[runner/invoke.rs<br/>lcs subprocess]
         probe[runner/probe.rs<br/>engine availability]
-        scrape[runner/log_scrape.rs<br/>per-rule attribution]
+        introspect[runner/introspect.rs<br/>lcs rules vocab/fingerprint]
     end
 
     subgraph Metrics
@@ -129,12 +129,12 @@ sequenceDiagram
         LCS-->>Probe: exit 0|1 (ok) or 2 + stderr (skip)
     end
     Probe-->>Orch: Vec<EngineStatus>
-    Orch->>LCS: lcs list -e <eng> (per available engine)
-    LCS-->>Orch: category vocabulary
+    Orch->>LCS: lcs rules --json -e <eng> (per available engine)
+    LCS-->>Orch: rule_set_fingerprint + full rule manifest (categories, threat-classes, severities)
     par per (sample, engine) pair
         Orch->>Invoke: scan(sample, engine)
-        Invoke->>LCS: lcs --log scan -e <eng> -f json (stdin = sample bytes)
-        LCS-->>Invoke: stdout JSON, stderr, exit, log lines
+        Invoke->>LCS: lcs scan -e <eng> -f json (stdin = sample bytes)
+        LCS-->>Invoke: stdout JSON (findings[].rule_name + .engine, top-level rule_set_fingerprint + threat_scores), stderr, exit
         Invoke-->>Orch: ScanOutcome
     end
     Orch->>Metrics: compute_prf(outcomes, ground_truth)
@@ -191,15 +191,14 @@ shield-harness/
 │           └── 5001.toml
 ├── runs/
 │   └── 2026-04-25T10-15-32Z-a1b2c3d/
-│       ├── meta.json
+│       ├── meta.json           # lcs --version + per-engine rule_set_fingerprint + full rule manifest from `lcs rules --json`
 │       ├── run.json
 │       ├── summary.txt
 │       ├── metrics.csv
-│       ├── outputs/
-│       │   ├── simple.jsonl    # one line per sample
-│       │   ├── yara.jsonl
-│       │   └── ...
-│       └── logs/               # snapshot of lcs --log appended bytes
+│       └── outputs/
+│           ├── simple.jsonl    # one line per sample = full ScanReport JSON (incl. threat_scores)
+│           ├── yara.jsonl
+│           └── ...
 └── baselines/
     └── current -> ../runs/<ts>-<sha>   # symlink
 ```
@@ -241,13 +240,21 @@ classDiagram
         +Vec~Finding~ findings
         +Duration latency
         +i32 exit_code
-        +Vec~String~ rule_names
+        +String rule_set_fingerprint
+        +ThreatScores threat_scores
     }
     class Finding {
         +Category category
         +Severity severity
         +String description
+        +String matched_text
         +ByteRange byte_range
+        +String rule_name
+        +EngineName engine
+    }
+    class ThreatScores {
+        +BTreeMap~String,i64~ class_scores
+        +i64 cumulative
     }
     class EngineStatus {
         +EngineName name
@@ -421,20 +428,21 @@ flowchart LR
 
 The harness depends on these specific `lcs` surfaces. Changes here in `llm_context_shield` are the most likely source of harness breakage.
 
+Required: lcs ≥ 0.5.2.
+
 | Use | Invocation | Consumed |
 |---|---|---|
 | Version pinning | `lcs --version` | stdout |
 | Engine probe | `lcs scan -e <eng> -f quiet` (stdin = `"hi"`) | exit code + stderr |
-| Category vocab | `lcs list -e <eng>` | stdout (one category per line) |
-| Main scan | `lcs --log scan -e <eng> -f json` (stdin = sample) | stdout (JSON), exit code, log files in `$XDG_STATE_HOME/llm_context_shield/` (default `~/.local/state/llm_context_shield/`) |
+| Category vocabulary | `lcs rules --categories -e <eng>` | stdout (one category per line) — wired into validator's `--check-lcs-categories` and into per-engine sidecar checks |
+| Rule manifest | `lcs rules --json -e <eng>` | stdout (`{fingerprint, rules[].{engine, name, category, severity, threat_class, version, threat_level, threshold}}`) — captured into `meta.json` so a run record carries the full rule context it scanned against |
+| Threat classes | `lcs rules --threat-classes -e <eng>` | stdout (one class per line) — available for grouping in metrics summaries |
+| Rule-set fingerprint (cheap probe) | `lcs rules --fingerprint -e <eng>` | stdout (single hex line). The same value also appears top-level in every `ScanReport`. |
+| Rule name on a finding | (in `ScanReport.findings[].rule_name` from `scan -f json`) | per-finding string — surfaces "which specific rule fired" without log-scrape |
+| Main scan | `lcs scan -e <eng> -f json` (stdin = sample) | stdout JSON: `{clean, finding_count, findings[].{category, severity, description, matched_text, byte_range, rule_name, engine}, rule_set_fingerprint, threat_scores.{class_scores, cumulative}}`. Exit code: 0 = clean, 1 = threat, 2 = error. |
+| Diagnostic log (optional) | `lcs --log scan ...` writes to `$XDG_STATE_HOME/llm_context_shield/` | not required for findings or attribution; available for ad-hoc debugging only |
 
-The harness does **not** override `XDG_STATE_HOME` — `lcs --log` writes to its normal location. To attribute log lines to specific scans without intermingling with the operator's prior `lcs` use:
-
-- The harness records `(file_path, byte_offset)` for each log file at run start.
-- During the run, after each scan finishes, the worker reads the appended bytes since the last recorded offset for that file and tags them with the `(SampleId, EngineName)` of the scan that just ran.
-- After the run, the recorded byte ranges are copied into `runs/<id>/logs/` for the run record.
-
-**Caveat:** with `--jobs > 1`, log writes from concurrent `lcs` processes interleave, making byte-offset attribution unreliable. Per-rule attribution is therefore enabled only when `--jobs 1` is in effect (or when `--attribute-rules` is passed, which forces single-threaded execution). The default parallel run skips per-rule attribution; this matches the PRD's "best-effort" framing.
+The full `ScanReport` is preserved verbatim in `outputs/<engine>.jsonl` per scan, including `threat_scores` — even though v0.1 metrics ignore it, capturing everything lcs returns avoids a re-run when later metrics want it.
 
 ### 12.2 LMStudio / OpenAI-compatible HTTP
 
@@ -466,3 +474,5 @@ No streaming, no function-calling, no images. Plain `messages: [{role:"system", 
 
 - **2026-04-25** — Initial architecture derived from PRD v1.
 - **2026-04-25** — Added cohort abstraction (§6.4); reverted XDG_STATE_HOME isolation in favour of byte-offset attribution against the operator's real `lcs --log` directory (§12.1); blessed dep set finalised at 10 crates (§1, §13.1).
+- **2026-04-25** — Engine count corrected from five to three after probing lcs 0.5.0; `syara-sbert`/`syara-llm` are build features of `syara`, not separate `-e` values (§1, §5 framing). Category-vocab contract reframed: `lcs list` returns rule names, not categories; vocab fetch deferred upstream (§1, §3.4 row, §12.1 row). The Phase 7 per-rule attribution path is unaffected — rule names are what `lcs list` *does* give us.
+- **2026-04-26** — lcs 0.5.2 lands Phase 11.5: `lcs rules` subcommand exposes per-engine vocabularies + fingerprint + full rule manifest; every `Finding` now carries `rule_name` + `engine`; `ScanReport` adds top-level `rule_set_fingerprint` and `threat_scores`. Updates: §1 row on category vocab flipped from "deferred" to "wired"; §1 subprocess-only row reframed (rule attribution now from JSON, not log-scrape); §3 module diagram replaces `runner/log_scrape.rs` with `runner/introspect.rs`; §4 sequence diagram swapped `lcs list` → `lcs rules --json` and removed `--log`; §6.2 class diagram extended with `rule_name`, `engine`, `rule_set_fingerprint`, `threat_scores`; §12.1 contract table expanded for the richer surface; the byte-offset log-scrape narrative deleted (no longer needed). Phase 7 (per-rule attribution from logs) deleted from the phase plan; phases 8–11 renumbered to 7–10.

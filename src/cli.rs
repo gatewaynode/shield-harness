@@ -63,10 +63,6 @@ pub struct RunArgs {
     #[arg(long)]
     pub jobs: Option<usize>,
 
-    /// Enable per-rule attribution from lcs --log (forces --jobs 1)
-    #[arg(long)]
-    pub attribute_rules: bool,
-
     /// Run output directory
     #[arg(long, default_value = "runs")]
     pub runs_dir: PathBuf,

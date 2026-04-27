@@ -17,7 +17,7 @@ An external benchmarking and regression harness for `llm_context_shield`. The ha
 1. **Did detection quality regress?** (per-category precision / recall / F1, baselined.)
 2. **Did detection cost regress?** (latency, throughput.)
 
-The harness is strictly external. It treats `lcs` as a black-box subprocess. It never links the `llm_context_shield` library, never introspects internal data structures, and never edits `lcs` rules. Its only inside-the-box visibility is whatever `lcs --log` writes to disk.
+The harness is strictly external. It treats `lcs` as a black-box subprocess. It never links the `llm_context_shield` library, never introspects internal data structures, and never edits `lcs` rules. Its only inside-the-box visibility is whatever `lcs` exposes via its CLI surface — `scan` JSON output (including per-finding `rule_name` and `engine`, plus top-level `rule_set_fingerprint` and `threat_scores`), `rules` introspection (categories, threat-classes, fingerprint, full rule manifest), and optional `--log` writes to disk.
 
 ## 2. Use Cases
 
@@ -67,12 +67,12 @@ Operator wants to know why a particular sample fired (or failed to fire). Harnes
 - **Sidecar schema (v1).** Required fields: `id`, `text_path`, `verdict`, `format`, `source`, `license`. Threat samples additionally require `expected_categories` (list, drawn from the categories `lcs` itself reports — see §3.4) and `expected_min_severity`. Optional: `notes`, `seed_id` (for synthetic samples), `tags`.
 - **Formats.** Day-one supported `format` values: `raw_text`, `markdown`, `html`, `chat_history`. The harness presents the sample's raw bytes to `lcs` over stdin; format affects labelling and reporting, not invocation.
 - **Provenance.** Every sample carries enough metadata to reconstruct where it came from and under what licence it can be used. Imported samples preserve the original source's licence; synthetic samples record the local model that produced them and the seed `id`.
-- **Validation.** A `shield-harness validate` subcommand verifies all sidecars parse, every sample's `expected_categories` are recognised by the currently installed `lcs` (via `lcs list`), no `id` collisions, and every text file referenced exists.
+- **Validation.** A `shield-harness validate` subcommand verifies all sidecars parse, no `id` collisions, every text file referenced exists, every threat sample carries non-empty `expected_categories`, and `license` matches an allow-list. Validating `expected_categories` against the lcs vocabulary is deferred — see §3.4.
 
 ### 3.2 Runs
 
-- **Engine matrix.** Default invocation runs all five `lcs` engine variants — `simple`, `yara`, `syara`, `syara-sbert`, `syara-llm` — over every sample. CLI flags allow restricting to a subset (`--engines simple,yara`), matching the option shape `lcs` itself uses.
-- **Graceful degradation.** When an engine variant is unavailable (e.g. `syara-llm` because LMStudio is not reachable, or `syara-sbert` because ONNX runtime is missing), the harness records the variant as `skipped` with a reason and continues. A skipped engine never fails the run; it does mean its column is missing from the report.
+- **Engine matrix.** Default invocation runs all three `lcs` engine variants exposed by the lcs CLI — `simple`, `yara`, `syara` — over every sample. The semantic enrichments `syara-sbert` and `syara-llm` are *build-time features* of the `syara` engine, not separate `-e` values; capability is whatever the operator's installed lcs binary was built with. Future work item: drive multiple lcs binaries (one per capability tier) via per-engine `--lcs-path`-style overrides; out of scope for v0.1. CLI flags allow restricting to a subset (`--engines simple,yara`), matching the option shape `lcs` itself uses.
+- **Graceful degradation.** When an engine variant is unavailable (e.g. the lcs binary was built without `yara` features, or `syara`'s LLM-backed rules can't reach an OpenAI-compatible endpoint), the harness probes by invoking `lcs scan -e <eng> -f quiet` against a tiny constant input and records the variant as `skipped` with the stderr-derived reason. A skipped engine never fails the run; it does mean its column is missing from the report.
 - **Output.** Each run produces:
   1. A machine-readable run record (JSON), persisted under `runs/<timestamp>-<git-sha>/`.
   2. A human-readable summary printed to stdout.
@@ -85,13 +85,17 @@ Priority order, lower-numbered items ship before higher-numbered:
 
 1. Per-category precision / recall / F1, plus overall.
 2. Wall-clock latency per sample (p50 / p95 / p99) and total throughput per engine.
-3. Per-rule attribution — which rule names fired on which samples — derived from `lcs --log` output. Best-effort; degrades cleanly when log format changes.
+3. Per-rule attribution — which rule names fired on which samples — read directly from `findings[].rule_name` in each `ScanReport` (lcs ≥ 0.5.2). No log-scrape required.
 
 Confusion matrices and false-positive exploration are roadmap (see §6).
 
 ### 3.4 Category vocabulary
 
-The harness treats the set of detectable categories as **whatever the installed `lcs` reports**, not a hardcoded list. `validate` and `run` both consult `lcs list -e <engine>` to learn the current vocabulary and reject sidecars that reference unknown categories. This avoids drift when `lcs` adds or renames a scanner.
+The harness treats the set of detectable categories as **whatever the installed `lcs` reports**, not a hardcoded list. As of lcs 0.5.2, the `lcs rules --categories -e <engine>` subcommand exposes the canonical category vocabulary per engine (distinct from rule names, which are still available via `lcs list -e <engine>` and now also surface in every `Finding` as `rule_name`).
+
+The `validate` subcommand's `--check-lcs-categories` flag probes `simple`, `yara`, and `syara`, builds the union vocabulary, and emits a blocking `UnknownCategory` issue for any sidecar `expected_categories` entry not in the union. Per-engine probe failures (engine unavailable / build feature missing) are recorded as non-blocking notices so the check still runs against whichever engines responded. The lcs binary being entirely absent is a hard error (exit 2). The flag is opt-in so `validate` continues to work in environments without lcs.
+
+Per-engine narrowing (warning when a sample claims a category its target engines can't emit — e.g. `context_shift` against `simple` only) is in `tasks/BACKLOG.md`.
 
 ### 3.5 Diffing
 
@@ -153,12 +157,13 @@ The phase plan, sub-phase checklists, and review notes live in [`tasks/TODO.md`]
 | 4 | Diff + CI gate (UC-2, UC-3) | 📅 |
 | 5 | Importers: GitHub repo adapter, HuggingFace dataset adapter, academic-paper sample loader | 📅 |
 | 6 | Synthetic generation via LMStudio (UC-5) | 📅 |
-| 7 | Per-rule attribution from `lcs --log` parsing | 📅 |
-| 8 | Confusion-matrix / false-positive explorer (D in REFINEMENT) | 📅 Future |
-| 9 | Adversarial mutation engine (E in REFINEMENT) | 📅 Future |
-| 10 | ReDB-backed corpus + read/query server subroutine | 📅 Future |
-| 11 | Public corpus split (licence-filtered export) | 📅 Future |
+| 7 | Confusion-matrix / false-positive explorer (D in REFINEMENT) | 📅 Future |
+| 8 | Adversarial mutation engine (E in REFINEMENT) | 📅 Future |
+| 9 | ReDB-backed corpus + read/query server subroutine | 📅 Future |
+| 10 | Public corpus split (licence-filtered export) | 📅 Future |
 
 ## 7. Change log
 
 - **2026-04-25** — Initial PRD created from `tasks/REFINEMENT.md` answers. Corpus is file-per-sample + sidecar TOML; integration is subprocess-only; default engine matrix is all five with graceful degradation; CI gate is v0.1.
+- **2026-04-25** — Engine matrix corrected from five to three (`simple`, `yara`, `syara`) after probing the real lcs 0.5.0 CLI; `syara-sbert` and `syara-llm` are syara *build features*, not separate `-e` values (§3.2). Category-vocabulary contract reframed: `lcs list` returns rule names, not categories; deferred to upstream feature request, harness treats `expected_categories` as free-form for now (§3.4). Validation bullet in §3.1 trimmed accordingly. Other PRD drift remains (pre-existing): §3.1 sample-path layout still missing `<cohort>` segment, §3.1 sidecar field list missing `cohort`, §4.5 dep-set list outdated, §6 phase status stale — to be cleaned up in a follow-up pass.
+- **2026-04-26** — lcs Phase 11.5 landed in lcs 0.5.2: `lcs rules` subcommand exposes per-engine category/threat-class vocabularies, full rule manifest with metadata, and rule-set fingerprint. `ScanReport` now carries top-level `rule_set_fingerprint` and `threat_scores`; every `Finding` carries `rule_name` and `engine`. Harness updates: §1 black-box framing reworded (CLI surface is now richer); §3.3 per-rule attribution no longer needs log-scrape; §3.4 vocabulary check is now a real blocking validator with engine-probe notices for graceful degradation; old Phase 7 (per-rule attribution from `lcs --log`) deleted as obsolete; phases 8–11 renumbered to 7–10. Pre-existing PRD drift items still pending the cleanup pass.

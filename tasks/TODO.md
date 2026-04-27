@@ -15,17 +15,18 @@
 | Phase | Topic | Status |
 |---|---|---|
 | 0 | Project skeleton — Cargo.toml, CLI shell, module scaffolding | ✅ Done |
-| 1 | Corpus: schema, loader, validator, first cohort | 🚧 1a + 1b done; 1c next |
-| 2 | Run pipeline: probe, invoke, orchestrator, run record | 📅 |
-| 3 | Metrics: P/R/F1, latency, summary, CSV | 📅 |
-| 4 | Diff + CI gate | 📅 |
+| 1 | Corpus: schema, loader, validator, first cohort | 🚧 1a + 1b + 1b.5 done; 1c next |
+| 2 | Run pipeline: probe, invoke, orchestrator, run record | 📅 Unblocked (lcs 0.5.2 landed) |
+| 3 | Metrics: P/R/F1, latency, summary, CSV | 📅 (blocked on Phase 2) |
+| 4 | Diff + CI gate (incl. `rule_set_fingerprint` drift detection) | 📅 |
 | 5 | Importers (per-source adapters) | 📅 |
 | 6 | Synth via LMStudio | 📅 |
-| 7 | Per-rule attribution from `lcs --log` | 📅 |
-| 8 | Confusion-matrix / false-positive explorer | 📅 Future |
-| 9 | Adversarial mutation engine | 📅 Future |
-| 10 | ReDB-backed corpus + read/query server | 📅 Future |
-| 11 | Public corpus split (licence-filtered export) | 📅 Future |
+| 7 | Confusion-matrix / false-positive explorer | 📅 Future |
+| 8 | Adversarial mutation engine | 📅 Future |
+| 9 | ReDB-backed corpus + read/query server | 📅 Future |
+| 10 | Public corpus split (licence-filtered export) | 📅 Future |
+
+> **Phase 7 deleted 2026-04-26.** The original Phase 7 (per-rule attribution from `lcs --log` byte-offset scrape) is obsoleted by lcs 0.5.2's `findings[].rule_name`. Phases 8–11 renumbered to 7–10.
 
 ---
 
@@ -86,6 +87,21 @@
 
 **⏸ Pause for review (sub-phase boundary).**
 
+### Sub-phase 1b.5 — Wire lcs 0.5.2 introspection (post-11.5 landing)
+
+- [x] `runner::introspect::probe_categories(lcs_path, engine)` wraps `lcs rules --categories -e <engine>`. Distinguishes `LcsNotFound` (binary missing) from `EngineUnavailable` (engine-level skip) from `ParseFailed`.
+- [x] Validator `Options` switches from `check_lcs_categories: bool` to `category_vocabulary: Option<BTreeSet<String>>`. CLI handler probes `simple`/`yara`/`syara`, builds union, populates vocabulary.
+- [x] New `IssueKind::UnknownCategory { name }` (blocking) for categories outside the union vocabulary.
+- [x] New `IssueKind::LcsProbeFailed { engine, reason }` (non-blocking notice) for per-engine probe failures. `LcsCategoryCheckPending` removed.
+- [x] Lcs binary entirely missing → blocking error, exit 2 (does not poison `validate` runs that don't pass `--check-lcs-categories`).
+- [x] Phase 7 deletion: `runner::log_scrape` module removed; `--attribute-rules` flag removed from `RunArgs`; ARCH §12.1 byte-offset narrative deleted.
+- [x] Fixture `tests/fixtures/validate-cases/unknown-category/` + 3 vocab tests + 2 display tests added; obsolete `LcsCategoryCheckPending` tests removed. 25 unit tests pass.
+- [x] Smoke-tested against real lcs 0.5.2: `validate --check-lcs-categories` exits 0 on `happy/`, exits 1 on `unknown-category/`, exits 2 on `--lcs-path /nope/...`.
+
+**Done — single-commit bundle resolves the lcs 11.5 dependency. PRD §3.4, ARCH §1/§3/§4/§6.2/§7/§12.1/§14, CONTINUITY.md, and the phase plan all updated in the same commit.**
+
+**⏸ Pause for review (sub-phase boundary).**
+
 ### Sub-phase 1c — Seed cohort
 
 - [ ] Create `samples/seed-handcurated/clean/` with at least 6 hand-written clean samples covering all four formats (`raw_text`, `markdown`, `html`, `chat_history`).
@@ -101,13 +117,16 @@
 
 ## Phase 2 — Run pipeline
 
+**Unblocked 2026-04-26.** The lcs 11.5 dependency landed in lcs 0.5.2; the design here targets that surface (top-level `rule_set_fingerprint` + `threat_scores` on every `ScanReport`; `findings[].rule_name` + `findings[].engine` on every finding; `lcs rules --json` for the per-engine rule manifest).
+
 **Goal:** `shield-harness run` actually invokes `lcs`, captures outcomes per (cohort, sample, engine), and writes a complete run record under `runs/`.
 
 ### Sub-phase 2a — `lcs` invocation primitive
 
 - [ ] `runner::invoke::scan(sample, engine) -> ScanOutcome`. Pipes sample bytes to stdin of `lcs scan -e <eng> -f json`. Captures stdout, stderr, exit code, wall-clock latency.
 - [ ] `lcs` binary discovery: `--lcs-path` flag, fall back to `which lcs`. Resolved path captured.
-- [ ] JSON output parsed into `Finding` records using the schema documented in `llm_context_shield/README.md`.
+- [ ] JSON output parsed into `ScanReport` (top-level: `clean`, `finding_count`, `findings[]`, `rule_set_fingerprint`, `threat_scores.{class_scores, cumulative}`); each `Finding` deserialises `category`, `severity`, `description`, `matched_text`, `byte_range`, `rule_name`, `engine`. Required fields, not `Option<>` — lcs ≥ 0.5.2 is the contract.
+- [ ] Capture full `ScanReport` verbatim (preserve `threat_scores` even if v0.1 metrics ignore it).
 - [ ] Tests against a real local `lcs` binary if available; integration tests gated by `cargo test --features integration` so CI without `lcs` still passes unit tests.
 
 ### Sub-phase 2b — Engine availability probe
@@ -126,7 +145,7 @@
 ### Sub-phase 2d — Run record persistence
 
 - [ ] `report::record::write_run(dir, record)` produces the directory layout in ARCHITECTURE §7: `meta.json`, `outputs/<engine>.jsonl`, `run.json`. (Metrics/summary land in Phase 3.)
-- [ ] `meta.json` captures `lcs --version`, harness git SHA (from build-time env or runtime `git rev-parse`), corpus content hash (sha256 over sorted (sidecar_path, hash-of-content, text_path, hash-of-content) rows), started_at, finished_at, requested engines, host info.
+- [ ] `meta.json` captures `lcs --version`, harness git SHA (from build-time env or runtime `git rev-parse`), corpus content hash (sha256 over sorted (sidecar_path, hash-of-content, text_path, hash-of-content) rows), started_at, finished_at, requested engines, host info, **per-engine `rule_set_fingerprint`**, and the **full per-engine rule manifest** from `lcs rules --json -e <eng>` (so a stale run record carries the rule context it was scanned against).
 - [ ] Run directory is `runs/<UTC-RFC3339-timestamp>-<short-sha>/`.
 - [ ] Tests verifying the directory layout exists after a run, files contain expected top-level keys, and a second run produces a distinct directory.
 
@@ -177,6 +196,7 @@
 - [ ] `--threshold-f1 <delta>` and `--threshold-latency <pct>` flags; `--ci-gate` makes threshold breach exit 1.
 - [ ] `--within <run> --by-cohort` mode for within-run cross-cohort comparison.
 - [ ] `--allow-version-drift` flag so diff can compare runs across `lcs --version` boundaries.
+- [ ] **Rule-set drift detection:** if baseline and candidate share `lcs --version` but differ in any per-engine `rule_set_fingerprint`, surface as "rule-set drift" (likely user-rules change). `--allow-rule-set-drift` flag mirrors `--allow-version-drift`.
 - [ ] Tests against fixture run directories.
 
 **Done when:** the operator can change one rule in `lcs`, run twice, and see a focused diff that names exactly the samples and categories that moved.
@@ -225,44 +245,25 @@
 
 ---
 
-## Phase 7 — Per-rule attribution from `lcs --log`
+## Phase 7 — Confusion-matrix / false-positive explorer (FUTURE)
 
-**Goal:** `shield-harness inspect <id>` and (optionally) `run --attribute-rules` surface which rule(s) inside `lcs` fired on which sample.
-
-### Tasks
-
-- [ ] `runner::log_scrape::Tailer`: records `(file_path, byte_offset)` for every file under `$XDG_STATE_HOME/llm_context_shield/` at run start.
-- [ ] After each scan completes, the tailer reads appended bytes since the recorded offset for that file and stores them as the scan's `log_lines`.
-- [ ] Parser extracts rule names from the log lines (best-effort regex against the current format; if the format changes, log a warning and produce empty attribution rather than aborting).
-- [ ] `--attribute-rules` flag on `run` forces `--jobs 1` and enables attribution.
-- [ ] `inspect <id>` runs every available engine on a single sample with attribution on, dumps the raw `lcs` JSON + the captured log slice for each engine.
-- [ ] Tests against fixture log files.
-
-**Done when:** the operator can ask "why did sample 0101 false-positive on the `yara` engine?" and get an answer naming specific rule names.
-
-**⏸ Pause for review.**
+Out of scope for v0.1. Will be planned in detail when prior phases are stable. Expected surface: an `explore` subcommand that prints / serves a per-cohort confusion matrix and a ranked list of "samples most often misclassified across runs." Per-rule attribution is now free (every `Finding` carries `rule_name`), so the explorer can group misclassifications by the specific rule that fired or failed to fire.
 
 ---
 
-## Phase 8 — Confusion-matrix / false-positive explorer (FUTURE)
-
-Out of scope for v0.1. Will be planned in detail when prior phases are stable. Expected surface: an `explore` subcommand that prints / serves a per-cohort confusion matrix and a ranked list of "samples most often misclassified across runs."
-
----
-
-## Phase 9 — Adversarial mutation engine (FUTURE)
+## Phase 8 — Adversarial mutation engine (FUTURE)
 
 Out of scope for v0.1. Higher-risk because it can drift the corpus toward "things `lcs` happens not to detect." Will need a curation loop (operator approves each generated sample) before it can grow the official cohorts.
 
 ---
 
-## Phase 10 — ReDB-backed corpus + read/query server (FUTURE)
+## Phase 9 — ReDB-backed corpus + read/query server (FUTURE)
 
 Migrate corpus storage from file-per-sample to a ReDB-backed store. Add a `serve` subcommand that exposes a query API for downstream tooling. Out of scope for v0.1; unlikely before v0.3.
 
 ---
 
-## Phase 11 — Public corpus split (FUTURE)
+## Phase 10 — Public corpus split (FUTURE)
 
 Mechanical export of all samples whose `license` field is in a public-allow-list. Sidecar `cohort` field becomes the unit of selection. Out of scope for v0.1; needed when there's a reason to share.
 
@@ -272,9 +273,9 @@ Mechanical export of all samples whose `license` field is in a public-allow-list
 
 Edit this section as work happens; this is the at-a-glance "what's next" view.
 
-- **Now:** Phase 1b complete — awaiting review.
-- **Next:** Phase 1c — seed cohort (≥6 clean + ≥6 threat hand-written samples covering 4 formats × ≥4 lcs categories under `samples/seed-handcurated/`; `cargo run -- validate` exits 0 on it).
-- **Blocked / waiting:** none. (1c needs lcs category names; per ARCH §3.4 the harness shouldn't hardcode them, but for hand-curated seeds the operator picks plausible names — when Phase 2 probe lands, validation against the real vocabulary becomes possible.)
+- **Now:** Phase 1b.5 complete (lcs 0.5.2 introspection wired; Phase 7 deleted; phases renumbered). Phase 2 unblocked.
+- **Next:** either Phase 1c (seed cohort hand-curation, operator-paced) or Phase 2a (`runner::invoke` against lcs 0.5.2 — `ScanReport` parser with all required fields, `--lcs-path` discovery, latency capture). Operator's call.
+- **Blocked / waiting:** nothing.
 
 ## Cross-cutting reminders
 
