@@ -28,7 +28,7 @@ Each entry: **what**, **why** (the trigger or motivation), **when to revisit** (
 
 ## lcs version pinning ergonomics
 
-**What:** the harness assumes lcs ≥ 0.5.2 (Phase 11.5 surface). Today, a pre-0.5.2 binary fails noisily on the first `lcs rules` call. Cleaner: probe `lcs --version` at startup and emit a clear "this harness requires lcs ≥ 0.5.2; you have lcs <X>" message before any subcommand work. Possibly also a `--no-lcs-check` escape hatch for environments without lcs at all.
+**What:** the harness assumes lcs ≥ 0.5.3 (Phase 11.5 surface + the 0.5.3 clean-response `threat_scores` fix). Today, a pre-0.5.3 binary fails noisily on the first `lcs rules` call or on the first parse of a clean `ScanReport`. Cleaner: probe `lcs --version` at startup and emit a clear "this harness requires lcs ≥ 0.5.3; you have lcs <X>" message before any subcommand work. Possibly also a `--no-lcs-check` escape hatch for environments without lcs at all.
 
 **Why:** the failure mode today is fine for someone who reads stderr carefully but isn't great for first-time users.
 

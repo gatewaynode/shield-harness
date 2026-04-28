@@ -8,37 +8,38 @@ This is **not** a planning document (that's `TODO.md`), **not** a vision documen
 
 ## Last updated
 
-2026-04-26 — end of Phase 1c. **All of Phase 1 complete (1a + 1b + 1b.5 + 1c).** Seed cohort exists at `samples/seed-handcurated/` with 6 clean + 6 threat samples covering all four formats. Both `validate` modes exit 0 against real lcs 0.5.2. **Phase 1b.5 was committed earlier this session; the Phase 1c sample drop is uncommitted in the working tree, awaiting operator commit.**
+2026-04-27 — end of Phase 2a. **`runner::invoke::scan` lands against lcs 0.5.3.** Types in `runner::scan_report` (`ScanReport`, `Finding`, `ThreatScores`) match the JSON exactly with all 11.5 fields required (no `Option<>`). Shared `runner::lcs::binary` resolver — `runner::introspect` refactored onto it. **39 tests pass** (was 25; +5 scan_report parse, +2 lcs resolver, +7 invoke including 7 live lcs 0.5.3 integration tests). Pin bumped to lcs ≥ 0.5.3 after Phase 2a probe surfaced + filed + fixed an upstream gap in one cycle. **Phase 2a bundle uncommitted in working tree.**
 
 ## Where we are
 
-- **All of Phase 1 complete.** Loader + validator + lcs-introspection-backed vocab check + seed cohort. **25 unit tests green** (no test changes in 1c — pure data drop). `cargo run -- --samples-dir samples validate --check-lcs-categories` exits 0 against the real seed cohort and lcs 0.5.2.
-- **Phase 2 (run pipeline) is the next engineering work.** The 11.5-dependent fields (`rule_set_fingerprint`, `findings[].rule_name`, `findings[].engine`, `threat_scores`) should be modelled as required (not `Option<>`) since lcs ≥ 0.5.2 is the contract. See ARCH §12.1 for the full invocation surface.
-- **Operator-edit pass on seed samples is a separate, parallel track.** It does not block Phase 2 — `runner::invoke` is engine-blind to sample text quality. See "Seed-cohort fire-rate" below.
+- **Phase 1 done; Phase 2a done.** Validator works end-to-end against the real seed cohort. `runner::invoke::scan` works end-to-end against lcs 0.5.3 — pipes stdin, captures stdout/stderr/exit/wall-clock latency, parses JSON into `ScanReport` for exit 0/1, returns `ScanError::Crashed` for exit 2.
+- **Phase 2b (engine availability probe) is the next engineering work.** State machine in ARCH §5 against `lcs scan -e <eng> -f quiet` with constant input. Stderr-derived skip reasons. Live tests against the real lcs binary (no runtime skip — operator preference).
+- **Operator-edit pass on seed samples is a separate, parallel track.** Doesn't block Phase 2b/2c/2d. See "Seed-cohort fire-rate" below.
 - **Awaiting commit cycle.** The user controls commits and pushes. Do not commit, push, or open PRs without explicit instruction.
 
-## What just landed (Phase 1c bundle, uncommitted)
+## What just landed (Phase 2a bundle, uncommitted)
 
-Pure data drop — no Rust code touched, no test code changed:
+**Upstream cycle:** Phase 2a probing of the real lcs 0.5.2 JSON surface revealed `threat_scores` was *missing* from `clean=true` responses across all three engines, contradicting the 11.5 spec's "always present" framing. Filed upstream; lcs 0.5.3 ships the fix (`threat_scores: {class_scores: {}, cumulative: 0}` on clean) with per-engine fingerprints unchanged. Harness pin moved 0.5.2 → 0.5.3. The "pause + file + resume" pattern from the memory note worked exactly as designed.
 
-- **`samples/seed-handcurated/clean/`** — 6 hand-drafted clean samples by Claude.
-  - `seed-clean-001.txt` raw_text — B-tree technical article
-  - `seed-clean-002.txt` raw_text — standup meeting notes
-  - `seed-clean-003.md` markdown — fictional-CLI README
-  - `seed-clean-004.md` markdown — dal tadka recipe
-  - `seed-clean-005.html` html — tide forecast page
-  - `seed-clean-006.txt` chat_history — wifi router support exchange
-- **`samples/seed-handcurated/threat/`** — 6 hand-drafted threat samples covering 6 distinct categories spanning all three engine tiers (3 simple-detectable, 2 yara-only, 1 syara-only):
-  - `seed-threat-001.txt` raw_text — `prompt_injection`, severity high
-  - `seed-threat-002.md` markdown — `jailbreak` (DAN-style), severity high
-  - `seed-threat-003.html` html — `secret_probing` (audit-form persona), severity high
-  - `seed-threat-004.txt` chat_history — `context_shift` (multi-turn role swap), severity high
-  - `seed-threat-005.txt` raw_text — `data_exfiltration` (/etc/passwd + env), severity high
-  - `seed-threat-006.md` markdown — `obfuscation` (base64 payload), severity high
-- **Doc updates:** TODO.md status snapshot (Phase 1 fully ✅; active checklist updated), TODO.md Phase 1c section (acceptance criteria all `[x]`, fire-rate matrix included), CONTINUITY.md (this rewrite — Last updated, Where we are, this section, Seed-cohort fire-rate, Active work, Files modified).
-- **Build state unchanged:** 25 tests pass; 1 expected `dead_code` warning (`Sample::read_bytes`) still pending — resolves with Phase 2a `runner::invoke`.
+**Code:**
+- `src/runner/scan_report.rs` — NEW. `ScanReport`, `Finding`, `ThreatScores` types matching lcs 0.5.3 JSON exactly. All 11.5 fields required (no `Option<>`). `serde::Deserialize`. Reuses `corpus::sample::Severity` (snake_case rename matches lcs lowercase strings). 5 parse tests covering clean response, single finding, multi finding, garbage input, missing-required-field rejection.
+- `src/runner/lcs.rs` — NEW. `binary(Option<&Path>) -> PathBuf` shared resolver. Explicit path used verbatim; `None` falls back to `PathBuf::from("lcs")` for PATH lookup at exec time. 2 unit tests.
+- `src/runner/invoke.rs` — `scan(sample_bytes, engine, lcs_path) -> Result<ScanOutcome, ScanError>`. Spawns `lcs scan -e <eng> -f json` with `Stdio::piped()` on all three streams. Writes sample bytes to stdin and drops it (closes EOF). Calls `wait_with_output()`. Exit 0 (clean) or 1 (threat) → parsed `ScanOutcome { report, exit_code, stderr, latency_ms, raw_stdout }`. Exit 2 → `ScanError::Crashed`. Other exit codes → `ScanError::UnexpectedExit`. Latency is wall-clock from `Instant::now()` at spawn through `wait_with_output()`. 7 integration tests (all live against lcs 0.5.3): LcsNotFound carries path; clean sample exit 0 + empty findings + cumulative=0; threat sample exit 1 + prompt_injection at `byte_range.0 == 0`; multi-finding syara with `cumulative > 0`; raw_stdout round-trips byte-for-byte through `serde_json::from_str` to equal `outcome.report`; latency under 60s; ParseFailed via `/bin/echo` stand-in (echo accepts stdin, exits 0, writes non-JSON — exact failure mode).
+- `src/runner/introspect.rs` — refactored `binary()` helper out; now uses `crate::runner::lcs::binary`. Behaviour unchanged; 4 existing introspect tests still pass.
+- `src/runner/mod.rs` — added `pub mod lcs;` and `pub mod scan_report;`.
 
-The earlier Phase 1b.5 bundle is now in git history (committed by the operator earlier this session).
+No CLI surface changes. The `Run` subcommand stub is unchanged — Phase 2c/2d will wire `scan()` into the `run` flow.
+
+**Doc updates:**
+- ARCHITECTURE.md — §1 (two rows) and §12.1 pin line bumped to lcs ≥ 0.5.3; §14 changelog entry for 2026-04-27.
+- PRD.md — §7 changelog entry for 2026-04-27 (pin bump + Phase 2a code drop).
+- BACKLOG.md — "lcs version pinning ergonomics" updated for 0.5.3 reality.
+- TODO.md — Phase 2 status row, Phase 2a checkboxes all `[x]` with details, active checklist (next = Phase 2b).
+- CONTINUITY.md — this rewrite (Last updated, Where we are, this section, Current lcs surface, Active work, Files modified).
+
+**Build state:** 39 tests pass. Eight `dead_code` warnings: 1 pre-existing (`Sample::read_bytes`), 7 new on the `runner::invoke`/`runner::scan_report` API surface (`ScanOutcome`, `ScanOutcome.stderr`, `ScanError`, `scan`, `ScanReport`, `Finding`, `ThreatScores`). Tests use them; `cargo build` doesn't compile tests, so the build sees them as unused. All seven resolve when Phase 2c/2d wires the orchestrator + run-record paths. Per project convention (memory: "Never suppress warnings"), they stay as forced reminders.
+
+The earlier Phase 1b.5 and Phase 1c bundles are now both in git history.
 
 ## Seed-cohort fire-rate (informational, captured 2026-04-26 against lcs 0.5.2)
 
@@ -60,22 +61,22 @@ Two valid readings, to be resolved during the operator-edit pass:
 
 Both readings have merit. The decision is per-sample, and the operator-edit pass owns it. **For Phase 2 (next), this matters not at all** — `runner::invoke` is engine-blind to sample quality.
 
-## Current lcs surface (lcs 0.5.2, verified 2026-04-26)
+## Current lcs surface (lcs 0.5.3, verified 2026-04-27)
 
-The harness depends on this surface. Pin: lcs ≥ 0.5.2.
+The harness depends on this surface. Pin: lcs ≥ 0.5.3 (0.5.3 fixes the clean-response `threat_scores` omission that 0.5.2 shipped with).
 
 | Surface | Sample invocation | Returns |
 |---|---|---|
-| Version | `lcs --version` | `lcs 0.5.2` |
+| Version | `lcs --version` | `lcs 0.5.3` |
 | Engine list | (hardcoded) | three engines: `simple`, `yara`, `syara` |
 | Category vocab | `lcs rules --categories -e <eng>` | one category per line. simple=6, yara=14, syara=15 (yara + `obfuscation`) |
 | Threat-class vocab | `lcs rules --threat-classes -e <eng>` | one class per line (broader grouping than categories) |
 | Fingerprint only | `lcs rules --fingerprint -e <eng>` | single hex line, SHA-256 of loaded rule set |
 | Full rule manifest | `lcs rules --json -e <eng>` | `{fingerprint, rules[].{engine, name, category, severity, threat_class, version, threat_level, threshold}}` |
 | Engine probe | `lcs scan -e <eng> -f quiet` (stdin = "hi") | exit code + stderr (skip reasons in stderr) |
-| Main scan | `lcs scan -e <eng> -f json` (stdin = sample) | `{clean, finding_count, findings[].{category, severity, description, matched_text, byte_range, rule_name, engine}, rule_set_fingerprint, threat_scores.{class_scores, cumulative}}`. Exit 0 = clean, 1 = threat, 2 = error |
+| Main scan | `lcs scan -e <eng> -f json` (stdin = sample) | `{clean, finding_count, findings[].{category, severity, description, matched_text, byte_range, rule_name, engine}, rule_set_fingerprint, threat_scores.{class_scores, cumulative}}`. Exit 0 = clean, 1 = threat, 2 = error. **0.5.3 guarantees `threat_scores` is present even when `clean=true` (with empty `class_scores` and `cumulative: 0`); 0.5.2 omitted it on clean.** |
 
-Today's per-engine fingerprints (2026-04-26):
+Per-engine fingerprints (2026-04-27, unchanged from 2026-04-26 captures — 0.5.3 was a JSON-shape fix, not a rule-set change):
 - simple: `4c6cd18ac803ea92cb145a143b6e1629b30ee655e59afa6f60a65f150c11469a`
 - yara: `c08cf011a8f298bc5564f731646fc99151243d85fb3a1778fc6ddcefe88dba7e`
 - syara: `bb3ce91b0d6816f3676831c3f049f3c69a75425be727dae7467aff4d08f511c1`
@@ -99,7 +100,7 @@ These will change when lcs ships rule updates — that's the point of capturing 
 - **Cohort abstraction is first-class.** Samples live at `samples/<cohort>/<verdict>/<id>.<ext>`. Every metric is sliced by cohort. The directory name MUST equal the sidecar `cohort` field. (ARCH §6.1, §6.4.)
 - **Engine matrix is THREE engines** (`simple`, `yara`, `syara`). `syara-sbert` and `syara-llm` are *build features* of the `syara` engine, not separate `-e` values. Engine availability is probed (`lcs scan -e <eng> -f quiet`); unavailable engines are skipped, never failed. (ARCH §1, §5; PRD §3.2.)
 - **Category vocabulary check is a real blocking validator** behind `--check-lcs-categories`. Probes simple/yara/syara, builds union vocab, rejects unknown categories blocking. Per-engine probe failures degrade to non-blocking notices (so a partial probe still validates). lcs binary entirely missing → exit 2. Default-off so `validate` works without lcs installed.
-- **`Finding` JSON shape requires `rule_name` + `engine`.** `ScanReport` requires top-level `rule_set_fingerprint` + `threat_scores`. Don't model these as `Option<>` — lcs ≥ 0.5.2 is the contract. If a pre-0.5.2 binary is encountered, fail loudly.
+- **`Finding` JSON shape requires `rule_name` + `engine`.** `ScanReport` requires top-level `rule_set_fingerprint` + `threat_scores`. Don't model these as `Option<>` — lcs ≥ 0.5.3 is the contract (0.5.3 ships the `threat_scores`-on-clean fix that made the "no Option<>" stance defensible). If a pre-0.5.3 binary is encountered, fail loudly — `runner::scan_report` parsing will reject the missing field on the first clean response.
 - **Capture all metadata.** Per-scan `outputs/<engine>.jsonl` preserves the full `ScanReport` verbatim (including `threat_scores`, even though v0.1 metrics ignore it). `meta.json` captures per-engine `rule_set_fingerprint` AND the full `lcs rules --json -e <eng>` output (rule manifest with severities, threat_levels, etc.). This avoids re-running the corpus when later metrics want a field.
 - **Determinism is contractual.** Sort sample iteration by `(cohort, id)`. Sort outcomes by `(cohort, sample_id, engine_name)` before serialisation. Use `BTreeMap` for any map-typed serialised field. The `rule_set_fingerprint` from each engine is part of this — pin it into `meta.json`. (ARCH §10, §12.1.)
 - **Synthetic samples never get auto-validated by `lcs`.** That conflates ground truth with the system under test. Operator decides what enters the corpus. (ARCH §9.)
@@ -144,15 +145,15 @@ These are also in `~/.claude/projects/-Users-john-code-shield-harness/memory/` a
 
 ## Active work
 
-**Phase 1c just landed — uncommitted data-only bundle in working tree.** Cleanest state for the next session is at the Phase 1c boundary, post-commit.
+**Phase 2a just landed — uncommitted bundle in working tree.** Cleanest state for the next session is at the Phase 2a boundary, post-commit.
 
 Single path when ready:
 
-- **Phase 2a (`runner::invoke`).** First real scan-pipeline code. Define `ScanReport` + `Finding` types matching the lcs 0.5.2 JSON exactly (required fields, not `Option<>`). Wire `--lcs-path` resolution. Pipe stdin, capture stdout/stderr/exit/latency. Tests gated on lcs availability.
+- **Phase 2b (`runner::probe::probe_engines`).** State machine in ARCH §5 against `lcs scan -e <eng> -f quiet` with constant input (`"hi"` per ARCH). Stderr-derived skip reasons (feature missing, ONNX runtime missing, LMStudio unreachable). Returns `Vec<EngineStatus>` — Available / Skipped(reason). Live integration tests against the real lcs binary (no runtime skip — operator preference). Should reuse `runner::lcs::binary` resolver and (probably) factor a small `Command::new(...).args(["scan", "-e", ...])` builder shared with `runner::invoke` if the duplication grows enough to matter.
 
-Two parallel-track items don't block 2a:
+Two parallel-track items don't block 2b:
 
-- **Operator-edit pass on seed samples.** User-owned. Decide per-sample whether to tighten language so threats fire as labelled, or preserve as detection-gap signal (see Seed-cohort fire-rate above). Independent of `runner::invoke`.
+- **Operator-edit pass on seed samples.** User-owned. Decide per-sample whether to tighten language so threats fire as labelled, or preserve as detection-gap signal (see Seed-cohort fire-rate above). Independent of the run pipeline.
 - **PRD drift cleanup.** Documentation hygiene; flagged in BACKLOG.md.
 
 ## In-flight questions / things to raise
@@ -162,16 +163,22 @@ Two parallel-track items don't block 2a:
 - **lcs version pinning / ergonomics.** Should the harness probe `lcs --version` at startup and warn (or fail) on lcs < 0.5.2? Or rely on the first `lcs rules` call to fail naturally? Logged in `BACKLOG.md`.
 - **PRD drift cleanup pass.** Items deferred from the 2026-04-25 PRD edit: §3.1 sample-path layout still missing `<cohort>` segment, §3.1 sidecar field list missing `cohort`, §4.5 dep-set list outdated (says 4 crates, actual 9), §6 phase-status table now in sync with the renumber but the row narrative hasn't been re-read. Bundle in a future PRD cleanup pass when convenient.
 
-## Files modified during the most recent session (Phase 1c, uncommitted)
+## Files modified during the most recent session (Phase 2a, uncommitted)
 
-**Data drop (24 new files):**
-- `samples/seed-handcurated/clean/seed-clean-{001..006}.{txt,md,html}` paired with matching `.toml` sidecars (12 files).
-- `samples/seed-handcurated/threat/seed-threat-{001..006}.{txt,md,html}` paired with matching `.toml` sidecars (12 files).
+**Code (NEW or MODIFIED):**
+- `src/runner/scan_report.rs` — NEW. `ScanReport` / `Finding` / `ThreatScores` types matching lcs 0.5.3 JSON exactly. 5 parse tests.
+- `src/runner/lcs.rs` — NEW. `binary(Option<&Path>) -> PathBuf` shared resolver. 2 unit tests.
+- `src/runner/invoke.rs` — REWRITTEN (was a stub). `scan(sample_bytes, engine, lcs_path) -> Result<ScanOutcome, ScanError>`. 7 live integration tests against lcs 0.5.3.
+- `src/runner/introspect.rs` — REFACTORED. Removed local `binary()`; now uses `crate::runner::lcs::binary`. Updates `LcsNotFound.path` to use `PathBuf::display()`. 4 existing tests still pass.
+- `src/runner/mod.rs` — added `pub mod lcs;` and `pub mod scan_report;`.
 
-No source code, test code, or `Cargo.toml` changes in 1c.
+No `Cargo.toml`, no CLI surface, no fixture, no test-helper changes. `Run` subcommand stub unchanged.
 
 **Documentation:**
-- `tasks/CONTINUITY.md` — this rewrite (Last updated, Where we are, What just landed, Seed-cohort fire-rate, Active work, Files modified).
-- `tasks/TODO.md` — Phase 1 status flipped to ✅, Phase 1c acceptance criteria all `[x]`, fire-rate matrix added, active checklist updated.
+- `ARCHITECTURE.md` — §1 (two rows) and §12.1 pin line bumped 0.5.2 → 0.5.3; §14 changelog entry added for 2026-04-27.
+- `PRD.md` — §7 changelog entry added for 2026-04-27.
+- `tasks/BACKLOG.md` — "lcs version pinning ergonomics" entry updated for 0.5.3 reality.
+- `tasks/TODO.md` — Phase 2 status row, Phase 2a section (all checkboxes `[x]` with detail), active checklist updated to point at Phase 2b.
+- `tasks/CONTINUITY.md` — this rewrite.
 
-For the prior Phase 1b.5 bundle (now in git history), see git log; CONTINUITY's previous draft listed those file changes in this section.
+For the Phase 1b.5 and Phase 1c bundles (now both in git history), see git log.

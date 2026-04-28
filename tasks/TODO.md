@@ -16,7 +16,7 @@
 |---|---|---|
 | 0 | Project skeleton — Cargo.toml, CLI shell, module scaffolding | ✅ Done |
 | 1 | Corpus: schema, loader, validator, first cohort | ✅ Done (1a + 1b + 1b.5 + 1c) |
-| 2 | Run pipeline: probe, invoke, orchestrator, run record | 📅 Unblocked (lcs 0.5.2 landed) |
+| 2 | Run pipeline: probe, invoke, orchestrator, run record | 🚧 2a done (against lcs 0.5.3); 2b/2c/2d remaining |
 | 3 | Metrics: P/R/F1, latency, summary, CSV | 📅 (blocked on Phase 2) |
 | 4 | Diff + CI gate (incl. `rule_set_fingerprint` drift detection) | 📅 |
 | 5 | Importers (per-source adapters) | 📅 |
@@ -142,11 +142,15 @@ Both readings are valid. The operator-edit pass will resolve which is which on a
 
 ### Sub-phase 2a — `lcs` invocation primitive
 
-- [ ] `runner::invoke::scan(sample, engine) -> ScanOutcome`. Pipes sample bytes to stdin of `lcs scan -e <eng> -f json`. Captures stdout, stderr, exit code, wall-clock latency.
-- [ ] `lcs` binary discovery: `--lcs-path` flag, fall back to `which lcs`. Resolved path captured.
-- [ ] JSON output parsed into `ScanReport` (top-level: `clean`, `finding_count`, `findings[]`, `rule_set_fingerprint`, `threat_scores.{class_scores, cumulative}`); each `Finding` deserialises `category`, `severity`, `description`, `matched_text`, `byte_range`, `rule_name`, `engine`. Required fields, not `Option<>` — lcs ≥ 0.5.2 is the contract.
-- [ ] Capture full `ScanReport` verbatim (preserve `threat_scores` even if v0.1 metrics ignore it).
-- [ ] Tests against a real local `lcs` binary if available; integration tests gated by `cargo test --features integration` so CI without `lcs` still passes unit tests.
+- [x] `runner::invoke::scan(sample_bytes, engine, lcs_path) -> Result<ScanOutcome, ScanError>`. Pipes sample bytes to stdin of `lcs scan -e <eng> -f json`. Captures stdout, stderr, exit code, wall-clock latency.
+- [x] `lcs` binary discovery: shared `runner::lcs::binary(Option<&Path>) -> PathBuf` resolver. Explicit path used verbatim; otherwise falls back to `"lcs"` for PATH lookup at exec time. `runner::introspect` refactored onto the same helper. (Resolved-path capture into `meta.json` lands with Phase 2d alongside other run-record metadata.)
+- [x] JSON output parsed into `ScanReport` (top-level: `clean`, `finding_count`, `findings[]`, `rule_set_fingerprint`, `threat_scores.{class_scores, cumulative}`); each `Finding` deserialises `category`, `severity`, `description`, `matched_text`, `byte_range`, `rule_name`, `engine`. All required fields, no `Option<>` — lcs ≥ 0.5.3 is the contract (post 0.5.3 fix; see changelog).
+- [x] Capture full `ScanReport` verbatim — `ScanOutcome.raw_stdout` is the un-parsed JSON ready for Phase 2d's `outputs/<engine>.jsonl` write path.
+- [x] Tests against a real local `lcs` binary — 7 live integration tests covering: clean exit-0, threat exit-1 with prompt_injection, multi-finding syara, raw-stdout round-trip equality, latency capture, ParseFailed via `/bin/echo` stand-in, LcsNotFound on missing binary. **No runtime skip and no Cargo feature** — operator preference (2026-04-27) is to test live against lcs as we go since there's no CI yet.
+
+**Done — `runner::scan_report`, `runner::lcs`, `runner::invoke` all landed; 39 tests pass against lcs 0.5.3. New `dead_code` warnings on `ScanOutcome.stderr`, `ScanOutcome`, `ScanError`, `scan`, `ScanReport`, `Finding`, `ThreatScores` — pending consumers in 2c/2d. Per project convention, warnings are not suppressed; they are forced reminders of unfinished work.**
+
+**⏸ Pause for review (sub-phase boundary).**
 
 ### Sub-phase 2b — Engine availability probe
 
@@ -292,8 +296,8 @@ Mechanical export of all samples whose `license` field is in a public-allow-list
 
 Edit this section as work happens; this is the at-a-glance "what's next" view.
 
-- **Now:** Phase 1c complete (12-sample seed cohort drafted; both `validate` modes exit 0). Phase 1 entirely done. Phase 2 unblocked.
-- **Next:** Phase 2a (`runner::invoke` against lcs 0.5.2 — `ScanReport` parser with all required fields, `--lcs-path` discovery, latency capture). Operator-edit pass on the seed samples can happen in parallel — it doesn't block Phase 2.
+- **Now:** Phase 2a complete (`runner::invoke::scan` against lcs 0.5.3; types in `runner::scan_report`; shared `runner::lcs::binary`; 39 tests pass with 7 live integration tests). Pin bumped to lcs ≥ 0.5.3 after upstream `threat_scores` fix.
+- **Next:** Phase 2b (`runner::probe::probe_engines` against `lcs scan -e <eng> -f quiet`). State machine in ARCH §5; stderr-derived skip reasons; no runtime skip on tests.
 - **Blocked / waiting:** nothing.
 
 ## Cross-cutting reminders

@@ -1,5 +1,6 @@
 // Lcs introspection helpers. Wraps the `lcs rules` subcommand introduced in lcs 0.5.2.
 
+use crate::runner::lcs::binary as resolve_binary;
 use std::path::Path;
 use std::process::Command;
 
@@ -42,24 +43,18 @@ impl std::fmt::Display for ProbeError {
 
 impl std::error::Error for ProbeError {}
 
-fn binary(override_path: Option<&Path>) -> String {
-    override_path
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|| "lcs".to_string())
-}
-
 /// Probe the category vocabulary the given engine can emit.
 /// Wraps `lcs rules --categories -e <engine>` (lcs >= 0.5.2).
 pub fn probe_categories(
     lcs_path: Option<&Path>,
     engine: &str,
 ) -> Result<Vec<String>, ProbeError> {
-    let bin = binary(lcs_path);
+    let bin = resolve_binary(lcs_path);
     let output = Command::new(&bin)
         .args(["rules", "--categories", "-e", engine])
         .output()
         .map_err(|source| ProbeError::LcsNotFound {
-            path: bin.clone(),
+            path: bin.display().to_string(),
             source,
         })?;
 
