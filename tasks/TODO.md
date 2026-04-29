@@ -16,7 +16,7 @@
 |---|---|---|
 | 0 | Project skeleton — Cargo.toml, CLI shell, module scaffolding | ✅ Done |
 | 1 | Corpus: schema, loader, validator, first cohort | ✅ Done (1a + 1b + 1b.5 + 1c) |
-| 2 | Run pipeline: probe, invoke, orchestrator, run record | 🚧 2a done (against lcs 0.5.3); 2b/2c/2d remaining |
+| 2 | Run pipeline: probe, invoke, orchestrator, run record | 🚧 2a + 2b + 2c done (against lcs 0.5.3); 2d remaining |
 | 3 | Metrics: P/R/F1, latency, summary, CSV | 📅 (blocked on Phase 2) |
 | 4 | Diff + CI gate (incl. `rule_set_fingerprint` drift detection) | 📅 |
 | 5 | Importers (per-source adapters) | 📅 |
@@ -154,16 +154,26 @@ Both readings are valid. The operator-edit pass will resolve which is which on a
 
 ### Sub-phase 2b — Engine availability probe
 
-- [ ] `runner::probe::probe_engines(requested) -> Vec<EngineStatus>`. Implements the state machine in ARCHITECTURE §5 against `lcs scan -e <eng> -f quiet` with a tiny constant input.
-- [ ] Stderr parsed for the skip reason (feature missing, ONNX runtime missing, LMStudio unreachable).
-- [ ] Tests for each known skip reason against fixture stderr strings; integration test against the real `lcs` for the available engines.
+- [x] `runner::probe::probe_engines(requested, lcs_path) -> Result<Vec<EngineStatus>, ProbeError>`. Implements the state machine in ARCHITECTURE §5 against `lcs scan -e <eng> -f quiet` with `b"hi"` on stdin. Reuses `runner::lcs::binary` resolver. Per-engine failures (exit ≠ 0/1, unknown engine name) become `Skipped` with reason; only un-spawnable lcs binary surfaces as `ProbeError::LcsNotFound`. Order of returned `Vec<EngineStatus>` matches request order.
+- [x] Stderr parsed via `classify_stderr -> SkipKind` (FeatureMissing / OnnxRuntimeMissing / LmstudioUnreachable / Other). Format `"<kind>: <first non-empty line>"` is what lands in `EngineStatus.skip_reason` for run.json. Substring-matched against lowercased stderr; ONNX wins over Feature when both substrings are present (more-specific-cause priority).
+- [x] Tests: 8 pure unit tests for the classifier + skip-reason formatter (each known skip reason, priority, empty stderr, blank leading lines, unknown stderr); 7 live integration tests against real lcs 0.5.3 (LcsNotFound carries path; simple/yara/syara each available individually; three-engine probe preserves order; bogus engine name → Skipped with non-empty reason; empty request is a no-op).
+
+**Done — `runner::probe` lands; 54 tests pass total (was 39; +15). Stderr classification is best-effort substring matching with `Other` fallback so it's never lossy. Live tests exercise the actual lcs binary on every run, no runtime skip (operator preference, no CI yet).**
+
+**⏸ Pause for review (sub-phase boundary).**
 
 ### Sub-phase 2c — Orchestrator
 
-- [ ] `runner::orchestrator` builds the work-unit list `(cohort, sample_id, engine_name)`, dispatches via rayon `par_iter`, collects outcomes, sorts, returns `RunRecord`.
-- [ ] `--jobs N` flag wired through.
-- [ ] `--cohort` and `--exclude-cohort` filters applied at corpus load time.
-- [ ] `--engines` filter applied to the engine matrix.
+- [x] `runner::orchestrator::execute(common, args) -> Result<RunRecord, RunError>` loads the corpus, applies cohort filters, resolves the engine list (default = simple/yara/syara), runs `probe_engines`, drops Skipped engines from the matrix, builds the work-unit list `(cohort, sample_id, engine_name) + sample bytes`, dispatches via `rayon::into_par_iter().map(scan)`, sorts the `Vec<WorkResult>` by `(cohort, sample_id, engine)`, and returns the in-memory `RunRecord`. Disk persistence is Phase 2d.
+- [x] `--jobs N` wired through: `Some(n) → ThreadPoolBuilder::new().num_threads(n).build().install(...)`; `None → rayon global pool (num_cpus)`. Errors as `RunError::ThreadPoolBuildFailed` if rayon refuses the configuration.
+- [x] `--cohort` (include) and `--exclude-cohort` (drop) applied at load time. Trailing-`*` glob (e.g. `synthetic-*`) matches by prefix; plain strings are exact-match — same convention as the validator's `license_allowed`. Empty cohort filter ⇒ keep all; empty include + glob exclude composes correctly.
+- [x] `--engines` filter applied to the engine list passed to `probe_engines`. Empty ⇒ default `[simple, yara, syara]`. Engines that probe Skipped are recorded in `RunRecord.engine_statuses` with reason; if every requested engine is Skipped, `execute` errors with `RunError::NoAvailableEngines { statuses }` (caller can render the reasons).
+- [x] CLI handler `runner::orchestrator::run` calls `execute`, prints a per-engine summary (clean/threat/error counts + avg latency_ms) to stdout, returns `ExitCode::SUCCESS`. `RunError::*` paths print to stderr and exit 2.
+- [x] Tests: 6 unit (pattern_matches glob; filter compositions; resolve_engine_list defaults & override) + 5 live integration against lcs 0.5.3 (full seed cohort run yields 36 sorted work results with all 3 engines Available; engine filter narrows the matrix; NoSamples path; NoAvailableEngines path with bogus engine).
+
+**Done — `runner::orchestrator` lands; 65 tests pass total (was 54; +11). Smoke test: `cargo run -- run --cohort seed-handcurated` prints engines + per-engine outcomes (simple 41ms avg, yara 83ms, syara 158ms; 9 clean / 3 threat per engine — matches seed-cohort fire-rate). Three remaining `dead_code` warnings on `ScanOutcome` fields (`exit_code`, `stderr`, `raw_stdout`), `ScanError::ParseFailed.stdout`, and `RunRecord.requested_engines` — Phase 2d will read all of these into `outputs/<engine>.jsonl` + `meta.json`.**
+
+**⏸ Pause for review (sub-phase boundary).**
 
 ### Sub-phase 2d — Run record persistence
 
@@ -296,8 +306,8 @@ Mechanical export of all samples whose `license` field is in a public-allow-list
 
 Edit this section as work happens; this is the at-a-glance "what's next" view.
 
-- **Now:** Phase 2a complete (`runner::invoke::scan` against lcs 0.5.3; types in `runner::scan_report`; shared `runner::lcs::binary`; 39 tests pass with 7 live integration tests). Pin bumped to lcs ≥ 0.5.3 after upstream `threat_scores` fix.
-- **Next:** Phase 2b (`runner::probe::probe_engines` against `lcs scan -e <eng> -f quiet`). State machine in ARCH §5; stderr-derived skip reasons; no runtime skip on tests.
+- **Now:** Phase 2c complete (`runner::orchestrator::execute` ties the seed corpus + probe + scan into a sorted in-memory `RunRecord`; `--jobs` / `--cohort` / `--exclude-cohort` / `--engines` all wired; 65 tests pass with a full live seed-corpus integration test). `cargo run -- run --cohort seed-handcurated` produces a per-engine summary in ~400ms.
+- **Next:** Phase 2d (run-record persistence). `report::record::write_run(dir, record)` writes the directory layout in ARCH §7: `meta.json` (lcs --version, harness git SHA, corpus hash, started/finished, requested engines, host info, per-engine `rule_set_fingerprint` + full `lcs rules --json` manifest), `outputs/<engine>.jsonl` (one ScanReport per sample), `run.json` (per-(sample,engine) ScanOutcome). Run dir = `runs/<UTC-RFC3339>-<short-sha>/`.
 - **Blocked / waiting:** nothing.
 
 ## Cross-cutting reminders

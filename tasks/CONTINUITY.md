@@ -8,16 +8,33 @@ This is **not** a planning document (that's `TODO.md`), **not** a vision documen
 
 ## Last updated
 
-2026-04-27 — end of Phase 2a. **`runner::invoke::scan` lands against lcs 0.5.3.** Types in `runner::scan_report` (`ScanReport`, `Finding`, `ThreatScores`) match the JSON exactly with all 11.5 fields required (no `Option<>`). Shared `runner::lcs::binary` resolver — `runner::introspect` refactored onto it. **39 tests pass** (was 25; +5 scan_report parse, +2 lcs resolver, +7 invoke including 7 live lcs 0.5.3 integration tests). Pin bumped to lcs ≥ 0.5.3 after Phase 2a probe surfaced + filed + fixed an upstream gap in one cycle. **Phase 2a bundle uncommitted in working tree.**
+2026-04-28 — end of Phase 2c, **uncommitted in working tree** (Phase 2b also still uncommitted; both bundles are in the working tree). **`runner::orchestrator::execute` ties corpus → probe → scan → sorted `RunRecord` end-to-end.** Cohort include/exclude filters with trailing-`*` glob, default-or-explicit engine list, rayon dispatch with `--jobs N` (custom `ThreadPoolBuilder::install` when set, global pool when not), `RunError` enum for the failure paths (`LoadFailed` / `ReadSampleFailed` / `ProbeFailed` / `ThreadPoolBuildFailed` / `NoSamples` / `NoAvailableEngines`). CLI handler prints per-engine clean/threat/error/avg-latency summary. **65 tests pass** (was 54; +11 in `runner::orchestrator` — 6 unit, 5 live lcs 0.5.3 integration including a full 36-result seed-corpus run). Smoke test: `cargo run -- run --cohort seed-handcurated` returns in ~400ms with simple 41ms / yara 83ms / syara 158ms avg latency, 9 clean + 3 threat per engine (matching the documented seed fire-rate). Phase 2a still committed at `672410d`. Next: Phase 2d (disk persistence).
 
 ## Where we are
 
-- **Phase 1 done; Phase 2a done.** Validator works end-to-end against the real seed cohort. `runner::invoke::scan` works end-to-end against lcs 0.5.3 — pipes stdin, captures stdout/stderr/exit/wall-clock latency, parses JSON into `ScanReport` for exit 0/1, returns `ScanError::Crashed` for exit 2.
-- **Phase 2b (engine availability probe) is the next engineering work.** State machine in ARCH §5 against `lcs scan -e <eng> -f quiet` with constant input. Stderr-derived skip reasons. Live tests against the real lcs binary (no runtime skip — operator preference).
-- **Operator-edit pass on seed samples is a separate, parallel track.** Doesn't block Phase 2b/2c/2d. See "Seed-cohort fire-rate" below.
-- **Awaiting commit cycle.** The user controls commits and pushes. Do not commit, push, or open PRs without explicit instruction.
+- **Phase 1 done + committed; Phase 2a done + committed (`672410d`); Phase 2b + 2c done + uncommitted in working tree.** Validator works end-to-end. `runner::invoke::scan` parses the full `ScanReport`. `runner::probe::probe_engines` reports per-engine availability + skip-reason. `runner::orchestrator::execute` runs the full corpus × engines matrix in parallel and returns a sorted in-memory `RunRecord`; the CLI handler prints a per-engine summary.
+- **Phase 2d (disk persistence) is the next engineering work.** `report::record::write_run(dir, record)` produces the ARCH §7 directory layout — `meta.json` (lcs --version, harness git SHA, corpus content hash, started/finished, requested engines, host info, per-engine `rule_set_fingerprint` + full `lcs rules --json` manifest), `outputs/<engine>.jsonl` (one ScanReport per sample), `run.json` (per-(sample,engine) ScanOutcome). Run dir = `runs/<UTC-RFC3339>-<short-sha>/`. The orchestrator already produces all the data the writer will need; 2d is mostly serialization choices + filesystem layout.
+- **Operator-edit pass on seed samples is a separate, parallel track.** Doesn't block Phase 2d. See "Seed-cohort fire-rate" below.
+- **Commit cycle is operator-controlled.** Do not commit, push, or open PRs without explicit instruction.
 
-## What just landed (Phase 2a bundle, uncommitted)
+## What just landed (Phase 2c, uncommitted in working tree — bundled with the still-uncommitted Phase 2b)
+
+**Code (REWRITTEN):**
+- `src/runner/orchestrator.rs` — was a stub returning ExitCode 2 with "not yet implemented". Now `execute(common, args) -> Result<RunRecord, RunError>` is the entry point. Flow: `load_corpus` → `filter_samples` (include/exclude with `*`-suffix glob, same convention as validator's `license_allowed`) → `resolve_engine_list` (default `[simple, yara, syara]` or explicit `--engines`) → `probe_engines` → drop Skipped engines from the matrix (error `NoAvailableEngines` if all skipped) → `build_work_units` (reads bytes once per sample, fans out per available engine) → `dispatch` (rayon `into_par_iter().map(scan)`, with optional `ThreadPoolBuilder::new().num_threads(jobs).build().install(...)` when `--jobs` is set) → sort `Vec<WorkResult>` by `(cohort, sample_id, engine)` → bookend with `Utc::now()` for `started_at`/`finished_at`. `RunRecord { started_at, finished_at, requested_engines, engine_statuses, work_results, sample_count }`. `WorkResult { cohort, sample_id, engine, outcome: Result<ScanOutcome, ScanError> }` — the `Result` arm is preserved as-is so 2d can decide how to serialize errors. CLI handler `run(common, args)` calls `execute`, prints a per-engine summary (clean/threat/error counts + avg latency_ms), returns `ExitCode::SUCCESS` or `ExitCode::from(2)` on `RunError`.
+- 11 tests added: 6 pure unit (`pattern_matches` glob; filter compositions for include / exclude / glob / no-op; `resolve_engine_list` defaults & override) + 5 live integration against lcs 0.5.3 + the seed corpus (full 36-result matrix run with sort-order assertion + spot checks on `seed-clean-001` clean and `seed-threat-001` firing on `simple`; engine-filter narrows the matrix to 12 results with `engine == "simple"`; `NoSamples` path with `--cohort nonexistent`; `NoAvailableEngines` path with `--engines definitely-not-an-engine`).
+
+**Phase 2b code (still uncommitted, same content as before):**
+- `src/runner/probe.rs` — full module replacing the one-line stub. `probe_engines(requested, lcs_path) -> Result<Vec<EngineStatus>, ProbeError>` spawns `lcs scan -e <eng> -f quiet` per engine with `b"hi"` on stdin; exit 0/1 → Available, exit 2+ → Skipped(reason). `classify_stderr -> SkipKind` substring-matches into FeatureMissing / OnnxRuntimeMissing / LmstudioUnreachable / Other; ONNX wins over Feature when both substrings appear. 15 tests (8 unit + 7 live).
+
+**CLI surface:** `Run` subcommand is now wired (was a stub). Smoke-tested: `cargo run -- run --cohort seed-handcurated` returns in ~400ms with all three engines Available and the documented seed fire-rate (3 of 6 threats fire per engine; samples 003/004/005 do not — matches Seed-cohort fire-rate table below).
+
+**Doc updates:**
+- `tasks/TODO.md` — Phase 2 status row "2a + 2b + 2c done"; Phase 2b + 2c checkboxes all `[x]` with detail; active checklist points at Phase 2d.
+- `tasks/CONTINUITY.md` — this update.
+
+**Build state:** 65 tests pass. **Three** `dead_code` warnings remain — `ScanOutcome.{exit_code, stderr, raw_stdout}`, `ScanError::ParseFailed.stdout`, `RunRecord.requested_engines`. All five fields will be read by Phase 2d's writers (`outputs/<engine>.jsonl` consumes the raw fields; `meta.json` consumes `requested_engines`). Per project convention (memory: "Never suppress warnings"), they stay as forced reminders.
+
+## Phase 2a snapshot (committed at `672410d`, retained for context)
 
 **Upstream cycle:** Phase 2a probing of the real lcs 0.5.2 JSON surface revealed `threat_scores` was *missing* from `clean=true` responses across all three engines, contradicting the 11.5 spec's "always present" framing. Filed upstream; lcs 0.5.3 ships the fix (`threat_scores: {class_scores: {}, cumulative: 0}` on clean) with per-engine fingerprints unchanged. Harness pin moved 0.5.2 → 0.5.3. The "pause + file + resume" pattern from the memory note worked exactly as designed.
 
@@ -145,13 +162,13 @@ These are also in `~/.claude/projects/-Users-john-code-shield-harness/memory/` a
 
 ## Active work
 
-**Phase 2a just landed — uncommitted bundle in working tree.** Cleanest state for the next session is at the Phase 2a boundary, post-commit.
+**Phase 2b + 2c in working tree (uncommitted). Phase 2a committed at `672410d`.** Operator decides whether to commit the bundles separately or as one Phase 2bc commit. Files changed listed below.
 
 Single path when ready:
 
-- **Phase 2b (`runner::probe::probe_engines`).** State machine in ARCH §5 against `lcs scan -e <eng> -f quiet` with constant input (`"hi"` per ARCH). Stderr-derived skip reasons (feature missing, ONNX runtime missing, LMStudio unreachable). Returns `Vec<EngineStatus>` — Available / Skipped(reason). Live integration tests against the real lcs binary (no runtime skip — operator preference). Should reuse `runner::lcs::binary` resolver and (probably) factor a small `Command::new(...).args(["scan", "-e", ...])` builder shared with `runner::invoke` if the duplication grows enough to matter.
+- **Phase 2d (run-record persistence).** `report::record::write_run(dir, record)` produces the ARCH §7 directory layout. Run dir = `runs/<UTC-RFC3339>-<short-sha>/`; files in write order so an interrupted run is detectable. `meta.json` captures: `lcs --version`, harness git SHA (build-time `env!("CARGO_PKG_VERSION")` won't suffice — use runtime `git rev-parse --short HEAD` from the harness's own repo), corpus content hash (sha256 over sorted `(sidecar_path, sha-of-content, text_path, sha-of-content)` rows), started/finished, requested engines, host info (`hostname`, OS), per-engine `rule_set_fingerprint` (already in every `ScanOutcome.report`), and the **full per-engine rule manifest** from `lcs rules --json -e <eng>` (new `runner::introspect::probe_rule_manifest` helper). `outputs/<engine>.jsonl` writes one line per sample = `WorkResult.outcome.raw_stdout` verbatim (or a structured error sentinel for `Err` arms). `run.json` writes the `RunRecord` itself with `WorkResult` rows serialized — needs a `Serialize` story for `ScanError` (new `serializable_error_kind` enum or convert at write-time). Tests: directory exists post-run, top-level keys present, second run produces a distinct directory.
 
-Two parallel-track items don't block 2b:
+Two parallel-track items don't block 2d:
 
 - **Operator-edit pass on seed samples.** User-owned. Decide per-sample whether to tighten language so threats fire as labelled, or preserve as detection-gap signal (see Seed-cohort fire-rate above). Independent of the run pipeline.
 - **PRD drift cleanup.** Documentation hygiene; flagged in BACKLOG.md.
@@ -163,22 +180,16 @@ Two parallel-track items don't block 2b:
 - **lcs version pinning / ergonomics.** Should the harness probe `lcs --version` at startup and warn (or fail) on lcs < 0.5.2? Or rely on the first `lcs rules` call to fail naturally? Logged in `BACKLOG.md`.
 - **PRD drift cleanup pass.** Items deferred from the 2026-04-25 PRD edit: §3.1 sample-path layout still missing `<cohort>` segment, §3.1 sidecar field list missing `cohort`, §4.5 dep-set list outdated (says 4 crates, actual 9), §6 phase-status table now in sync with the renumber but the row narrative hasn't been re-read. Bundle in a future PRD cleanup pass when convenient.
 
-## Files modified during the most recent session (Phase 2a, uncommitted)
+## Files modified during the most recent session (Phase 2b + 2c, uncommitted in working tree)
 
-**Code (NEW or MODIFIED):**
-- `src/runner/scan_report.rs` — NEW. `ScanReport` / `Finding` / `ThreatScores` types matching lcs 0.5.3 JSON exactly. 5 parse tests.
-- `src/runner/lcs.rs` — NEW. `binary(Option<&Path>) -> PathBuf` shared resolver. 2 unit tests.
-- `src/runner/invoke.rs` — REWRITTEN (was a stub). `scan(sample_bytes, engine, lcs_path) -> Result<ScanOutcome, ScanError>`. 7 live integration tests against lcs 0.5.3.
-- `src/runner/introspect.rs` — REFACTORED. Removed local `binary()`; now uses `crate::runner::lcs::binary`. Updates `LcsNotFound.path` to use `PathBuf::display()`. 4 existing tests still pass.
-- `src/runner/mod.rs` — added `pub mod lcs;` and `pub mod scan_report;`.
+**Code (REWRITTEN):**
+- `src/runner/probe.rs` — was a one-line stub; now full module (Phase 2b). `probe_engines`, `probe_one`, `EngineStatus`, `Availability`, `SkipKind`, `classify_stderr`, `format_skip_reason`, `first_nonempty_line`, `ProbeError`. 15 tests.
+- `src/runner/orchestrator.rs` — was a stub returning ExitCode 2; now full module (Phase 2c). `execute(common, args) -> Result<RunRecord, RunError>` + `RunRecord`, `WorkResult`, `RunError`, `filter_samples`, `cohort_passes_filters`, `pattern_matches`, `resolve_engine_list`, `build_work_units`, `dispatch`, `print_summary`. CLI handler `run(common, args)` wired. 11 tests.
 
-No `Cargo.toml`, no CLI surface, no fixture, no test-helper changes. `Run` subcommand stub unchanged.
+No `Cargo.toml`, no fixture, no test-helper changes. `runner/lcs.rs`, `runner/invoke.rs`, `runner/scan_report.rs`, `runner/introspect.rs` all reused as-is from Phase 2a.
 
 **Documentation:**
-- `ARCHITECTURE.md` — §1 (two rows) and §12.1 pin line bumped 0.5.2 → 0.5.3; §14 changelog entry added for 2026-04-27.
-- `PRD.md` — §7 changelog entry added for 2026-04-27.
-- `tasks/BACKLOG.md` — "lcs version pinning ergonomics" entry updated for 0.5.3 reality.
-- `tasks/TODO.md` — Phase 2 status row, Phase 2a section (all checkboxes `[x]` with detail), active checklist updated to point at Phase 2b.
-- `tasks/CONTINUITY.md` — this rewrite.
+- `tasks/TODO.md` — Phase 2 status row "2a + 2b + 2c done"; Phase 2b + 2c sections all `[x]` with detail; active checklist points at Phase 2d.
+- `tasks/CONTINUITY.md` — this update.
 
-For the Phase 1b.5 and Phase 1c bundles (now both in git history), see git log.
+For the Phase 2a, 1b.5, and 1c bundles (all in git history), see git log.
